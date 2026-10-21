@@ -5,7 +5,8 @@ import {
   repaymentTotal, buildSchedule, installmentStatus, categoryPath, categoryMatches, removeCategory,
   summary, taxReserve, nextPayday, incomeHorizon, upcomingPayments, available, freeMoney,
   statementRemaining, shiftTotals, syncShift, incomeBreakdown, monthBudget, syncRecurring,
-  calendarMoney, forecastMoney, monthlyMoney, planFromExpense, validateTransaction, validateState
+  calendarMoney, forecastMoney, monthlyMoney, planFromExpense, validateTransaction, validateState,
+  duePaymentNotifications
 } from './core.js';
 
 const KEY = 'financier.personal.v1';
@@ -24,7 +25,7 @@ let filters = { from: '', to: '', category: '', importance: '', search: '', type
 let period = { from: today().slice(0, 7) + '-01', to: today() };
 let installEvent = null;
 let quickOrders = 1, quickPlusMode = false;
-let catKind = 'expense', openRootCat = null, budgetIncomeMode = 'all';
+let catKind = 'expense', openRootCat = null, budgetIncomeMode = 'all', purchasesTab = 'upcoming';
 let calAnchor = today(), calSpan = 'week', calMode = 'received', monthCursor = today().slice(0, 7);
 
 const app = document.querySelector('#app');
@@ -129,10 +130,80 @@ function mutate(fn) {
   validateState(next);
   persist(next);
   render();
+setTimeout(() => { checkStartupPaymentAlerts(); syncNativeNotifications(false); }, 600);
+  syncNativeNotifications(false);
 }
 
-function download(name, obj) {
+async function nativeApkShareFile(name, text) {
+  const cap = window.Capacitor;
+  const fsPlugin = cap?.Plugins?.Filesystem;
+  const sharePlugin = cap?.Plugins?.Share;
+  if (fsPlugin && sharePlugin) {
+    const written = await fsPlugin.writeFile({
+      path: name,
+      data: text,
+      directory: 'CACHE',
+      encoding: 'utf8'
+    });
+    await sharePlugin.share({
+      title: 'Резервная копия Финансист',
+      text: 'Резервная копия базы Финансист (' + name + ')',
+      url: written.uri,
+      dialogTitle: 'Сохранить или отправить копию'
+    });
+    return true;
+  }
+  return false;
+}
+
+function backupTextModal(customText = null, title = 'Резервная копия JSON') {
+  const text = customText ?? JSON.stringify(state, null, 2);
+  modal(title,
+    `<p class="muted">Нажми «Скопировать JSON» и вставь в «Избранное» Telegram или Заметки. В версии 3.0 восстановить базу можно прямо из скопированного текста без создания файла.</p>` +
+    `<div class="actions section">` +
+      `<button type="button" class="primary" id="copyBackupJsonBtn">📋 Скопировать весь JSON</button>` +
+      `<button type="button" class="soft" id="shareBackupTextBtn">📤 Отправить текстом</button>` +
+    `</div>` +
+    `<textarea id="backupTextarea" rows="12" readonly class="section">${esc(text)}</textarea>`
+  );
+  const ta = dialog.querySelector('#backupTextarea');
+  dialog.querySelector('#copyBackupJsonBtn').onclick = () => {
+    ta.select();
+    copy(text);
+  };
+  dialog.querySelector('#shareBackupTextBtn').onclick = async () => {
+    try {
+      if (window.Capacitor?.Plugins?.Share) {
+        await window.Capacitor.Plugins.Share.share({ title: 'Финансист JSON', text });
+        return;
+      }
+      if (navigator.share) {
+        await navigator.share({ title: 'Финансист JSON', text });
+        return;
+      }
+    } catch (e) {
+      if (e?.name === 'AbortError') return;
+    }
+    ta.select();
+    copy(text);
+  };
+}
+
+async function download(name, obj) {
   const text = typeof obj === 'string' ? obj : JSON.stringify(obj, null, 2);
+  try {
+    if (await nativeApkShareFile(name, text)) {
+      toast('Выбери приложение для сохранения файла');
+      return;
+    }
+  } catch (e) {
+    if (e?.name === 'AbortError' || String(e?.message || '').includes('canceled')) return;
+  }
+  if (window.Capacitor) {
+    try { await navigator.clipboard.writeText(text); toast('JSON скопирован в буфер обмена'); } catch {}
+    backupTextModal(text, 'Сохранение копии (' + name + ')');
+    return;
+  }
   const blob = new Blob([text], { type: 'application/json;charset=utf-8' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
@@ -145,6 +216,14 @@ async function shareBackup() {
   const name = 'financier-backup-' + today() + '.json';
   const text = JSON.stringify(state, null, 2);
   try {
+    if (await nativeApkShareFile(name, text)) {
+      toast('Копия готова к отправке');
+      return;
+    }
+  } catch (e) {
+    if (e?.name === 'AbortError' || String(e?.message || '').includes('canceled')) return;
+  }
+  try {
     const file = new File([new Blob([text], { type: 'application/json' })], name, { type: 'application/json' });
     if (navigator.canShare && navigator.canShare({ files: [file] })) {
       await navigator.share({ files: [file], title: 'Резервная копия Финансист', text: 'Копия базы Финансист от ' + today() });
@@ -154,17 +233,39 @@ async function shareBackup() {
   } catch (e) {
     if (e?.name === 'AbortError') return;
   }
-  download(name, state);
+  try {
+    if (navigator.share) {
+      await navigator.share({ title: name, text });
+      toast('Копия отправлена текстом');
+      return;
+    }
+  } catch (e) {
+    if (e?.name === 'AbortError') return;
+  }
+  try { await navigator.clipboard.writeText(text); toast('JSON скопирован в буфер обмена'); } catch {}
+  backupTextModal(text);
 }
 
 async function copy(s) {
   try {
     await navigator.clipboard.writeText(s);
-    toast('Скопировано в буфер');
-  } catch {
-    modal('Скопируйте текст', `<textarea rows="14" readonly>${esc(s)}</textarea>`);
-    dialog.querySelector('textarea').select();
-  }
+    toast('Скопировано в буфер обмена');
+    return;
+  } catch {}
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = s;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    if (ok) { toast('Скопировано в буфер обмена'); return; }
+  } catch {}
+  modal('Скопируйте текст', `<textarea rows="14" readonly>${esc(s)}</textarea>`);
+  dialog.querySelector('textarea').select();
 }
 
 // Theme Management
@@ -447,17 +548,17 @@ function accountsView() {
 }
 
 function moreView() {
+  const dueAlerts = duePaymentNotifications(state).length;
   const items = [
-    ['purchases', 'Покупки и платежи', 'Запланированные траты: подтвердить, перенести или отменить'],
+    ['purchases', 'Платежи и регулярные' + (dueAlerts ? ` (${dueAlerts})` : ''), 'Разовые планы, аренда, подписки по расписанию и пуш-уведомления'],
     ['forecast', 'Прогноз на 30 дней', 'Остаток денег по дням с учётом планов и выплат'],
     ['monthly', 'Итог месяца', 'Сводка доходов, расходов, накоплений и долгов'],
     ['earnings', 'Календарь денег', 'Наглядные столбцы доходов и расходов по дням'],
-    ['quick', 'Быстрые операции', 'Шаблоны частых трат и доходов в 1 касание'],
-    ['recurring', 'Регулярные платежи', 'Аренда, подписки и связь по расписанию'],
+    ['quick', 'Быстрые шаблоны', 'Кнопки частых трат и доходов в 1 касание'],
     ['budget', 'Бюджет и лимиты', 'Автолимиты по прошлому месяцу и контроль категорий'],
     ['reports', 'Отчёты и авторазбор', 'Факты по периоду, динамика и выписка для ИИ'],
     ['categories', 'Категории', 'Настройка категорий и подкатегорий'],
-    ['settings', 'Настройки и бэкап', 'Тема, отправка копии в Telegram/Файлы и APK-защита']
+    ['settings', 'Настройки, пуши и бэкап', 'Уведомления о платежах, тема, копия в Telegram и защита базы']
   ];
   return `<div class="bento-menu">${items.map(([id, t, sub]) => listButton('navigate', t, sub, id)).join('')}</div>`;
 }
@@ -589,12 +690,9 @@ function quickView() {
 }
 
 function recurringView() {
-  return `<div class="actions toolbar">${btn('navigate', '← Ещё', 'more', 'small ghost')}</div>` +
-    section('Регулярные платежи',
-      `<p class="muted">Планы создаются автоматически на 120 дней вперёд. Деньги списываются только после твоего подтверждения.</p>` +
-      (state.recurringPayments.map(r => `<div class="row wrap-row"><div class="row-main"><b>${esc(r.name)} ${!r.enabled ? '<span class="pill">Пауза</span>' : ''}</b><small>${{ week: 'Каждую неделю', fortnight: 'Раз в 2 недели', month: 'Каждый месяц' }[r.interval]} · с ${date(r.firstDate)} · ${esc(category(r.categoryId))}</small></div><b class="amount">${rub(r.amount)}</b>${btn('editRecurring', 'Изменить', r.id, 'small ghost')}</div>`).join('') || '<p class="muted">Добавь аренду, интернет, подписки или связь.</p>'),
-      btn('newRecurring', '+ Регулярный платёж', '', 'small primary')
-    );
+  purchasesTab = 'recurring';
+  view = 'purchases';
+  return purchasesView();
 }
 
 function calendarRange() {
@@ -629,9 +727,30 @@ function calendarView() {
 
 function purchasesView() {
   const plans = state.plans.filter(pending).sort((a, b) => a.date.localeCompare(b.date));
-  return `<div class="actions toolbar">${btn('navigate', '← Ещё', 'more', 'small ghost')}${btn('newPurchase', '+ Запланировать покупку', '', 'small primary')}${btn('navigate', 'Регулярные платежи', 'recurring', 'small soft')}</div>` +
-    section('На сегодня и просроченные', planRows(plans.filter(p => p.date <= today()))) +
-    section('Будущие покупки и платежи', planRows(plans.filter(p => p.date > today())));
+  const dueNow = plans.filter(p => p.date <= today());
+  const future = plans.filter(p => p.date > today());
+  const recList = state.recurringPayments || [];
+  const notifCfg = state.notifications || { enabled: true };
+
+  return `<div class="actions toolbar">` +
+      `${btn('navigate', '← Ещё', 'more', 'small ghost')}` +
+      `${btn('notificationsModal', '🔔 Уведомления' + (notifCfg.enabled ? ' (вкл)' : ' (выкл)'), '', 'small soft')}` +
+      `${btn('testNotification', '⚡ Тест пуша', '', 'small ghost')}` +
+    `</div>` +
+    `<div class="segmented">` +
+      `${btn('setPurchasesTab', `К оплате (${plans.length})`, 'upcoming', purchasesTab === 'upcoming' ? 'primary' : 'ghost')}` +
+      `${btn('setPurchasesTab', `Регулярные шаблоны (${recList.length})`, 'recurring', purchasesTab === 'recurring' ? 'primary' : 'ghost')}` +
+    `</div>` +
+    (purchasesTab === 'upcoming'
+      ? `<div class="actions">${btn('newPurchase', '+ Разовый платёж / покупка', '', 'small primary')}${btn('newRecurring', '+ Регулярный (аренда / подписка)', '', 'small soft')}</div>` +
+        section('На сегодня и просроченные', planRows(dueNow)) +
+        section('Будущие платежи и покупки', planRows(future))
+      : `<div class="actions">${btn('newRecurring', '+ Добавить регулярный платёж', '', 'small primary')}</div>` +
+        section('Автоматическое расписание (аренда, связь, подписки)',
+          `<p class="muted">Планы по этим шаблонам создаются автоматически на 120 дней вперёд и попадают во вкладку «К оплате» и в пуш-уведомления. Деньги со счёта списываются только когда ты нажмёшь «Купил».</p>` +
+          (recList.map(r => `<div class="row wrap-row"><div class="row-main"><b>${esc(r.name)} ${!r.enabled ? '<span class="pill">Пауза</span>' : ''}</b><small>${{ week: 'Каждую неделю', fortnight: 'Раз в 2 недели', month: 'Каждый месяц' }[r.interval]} · с ${date(r.firstDate)} · ${esc(category(r.categoryId))}</small></div><b class="amount">${rub(r.amount)}</b><div class="actions">${btn('editRecurring', 'Изменить', r.id, 'small ghost')}</div></div>`).join('') || '<p class="muted empty-line">Добавь аренду, интернет, подписки или связь.</p>')
+        )
+    );
 }
 
 function forecastView() {
@@ -665,7 +784,21 @@ function monthlyView() {
 
 function settingsView() {
   const curTheme = state.appearance?.theme || 'auto';
+  const nf = state.notifications || { enabled: true, dayBefore: true, sameDay: true, overdueNextDay: true, hour: 10 };
+  const dueAlerts = duePaymentNotifications(state);
   return `<div class="actions toolbar">${btn('navigate', '← Ещё', 'more', 'small ghost')}</div>` +
+    section('🔔 Уведомления о скорых платежах',
+      `<p class="muted">Напоминания о планах, рассрочках и долгах: за 1 день до срока, в день платежа (если не оплачено) и на следующий день при просрочке.</p>` +
+      `<div class="compact-stats">` +
+        `<div><span>Статус пушей</span><b class="${nf.enabled ? 'positive' : 'muted'}">${nf.enabled ? 'Включены' : 'Выключены'}</b><small>Время: ${String(nf.hour ?? 10).padStart(2, '0')}:00</small></div>` +
+        `<div><span>Режимы</span><b>${[nf.dayBefore ? 'За 1 дн.' : '', nf.sameDay ? 'В день' : '', nf.overdueNextDay ? 'Просрочка' : ''].filter(Boolean).join(' · ') || 'Нет'}</b><small>Правила контроля</small></div>` +
+        `<div><span>Горящих сейчас</span><b class="${dueAlerts.length ? 'expected-text' : 'positive'}">${dueAlerts.length} шт.</b><small>${dueAlerts.length ? 'Требуют внимания' : 'Всё чисто'}</small></div>` +
+      `</div>` +
+      `<div class="actions">` +
+        `${btn('notificationsModal', '⚙️ Настроить уведомления', '', 'primary')}` +
+        `${btn('testNotification', '🔔 Проверить уведомление сейчас', '', 'soft')}` +
+      `</div>`
+    ) +
     section('Тема и внешний вид',
       `<div class="theme-picker">${[['auto', 'Авто (система)'], ['light', 'Светлая'], ['dark', 'Тёмная (OLED)']].map(([id, n]) => btn('setTheme', n, id, curTheme === id ? 'primary' : 'ghost')).join('')}</div>` +
       `<p class="muted">Дизайн-система Android 2026 (Material 3 Expressive). Тёмная тема оптимизирована под AMOLED-экраны.</p>`
@@ -675,7 +808,7 @@ function settingsView() {
       `<div class="actions">` +
         `${btn('shareBackup', '📤 Отправить копию (Telegram / Файлы)', '', 'primary')}` +
         `${btn('backup', 'Скачать .json', '', 'soft')}` +
-        `${btn('restore', 'Восстановить из файла', '', 'ghost')}` +
+        `${btn('restore', 'Восстановить (текст / файл)', '', 'ghost')}` +
         `${btn('backupText', 'Копия текстом', '', 'ghost')}` +
       `</div>` +
       `<div class="actions section">` +
@@ -1160,11 +1293,31 @@ function debtModal(d) {
     const list = dialog.querySelector('#scheduleList');
     if (list) rows = [...list.querySelectorAll('[data-payment]')].map((el, i) => ({ id: rows[i]?.id || uid(), date: el.querySelector('[data-date]').value, amount: cents(el.querySelector('[data-amount]').value) }));
   };
+  const updateScheduleSumText = () => {
+    const list = dialog.querySelector('#scheduleList');
+    let sum = 0;
+    if (list) {
+      for (const el of list.querySelectorAll('[data-amount]')) {
+        try { sum += cents(el.value || '0'); } catch {}
+      }
+    }
+    const totEl = dialog.querySelector('#scheduleTotal');
+    if (totEl) totEl.innerHTML = `Всего по графику (${rows.length} пл.): <b>${rub(sum)}</b>`;
+  };
   const draw = () => {
     const list = dialog.querySelector('#scheduleList');
-    list.innerHTML = rows.map((p, i) => `<div class="schedule-edit" data-payment="${i}"><span>${i + 1}</span><input type="date" data-date value="${p.date}" required><input data-amount value="${decimal(p.amount)}" inputmode="decimal" required><button type="button" class="small ghost" data-remove-payment="${i}">×</button></div>`).join('');
-    dialog.querySelector('#scheduleTotal').textContent = 'Всего по графику: ' + rub(rows.reduce((n, p) => n + p.amount, 0));
+    list.innerHTML = rows.map((p, i) =>
+      `<div class="schedule-edit" data-payment="${i}">` +
+        `<span class="schedule-num">${i + 1}</span>` +
+        `<input type="date" data-date value="${p.date}" required aria-label="Дата платежа ${i + 1}">` +
+        `<input type="text" data-amount value="${decimal(p.amount)}" inputmode="decimal" data-no-math-bar="true" placeholder="Сумма ₽" required aria-label="Сумма платежа ${i + 1}">` +
+        `<button type="button" class="schedule-del-btn" data-remove-payment="${i}" aria-label="Удалить платёж ${i + 1}">✕</button>` +
+      `</div>`
+    ).join('');
+    updateScheduleSumText();
+    list.querySelectorAll('[data-amount]').forEach(inp => inp.addEventListener('input', updateScheduleSumText));
     list.querySelectorAll('[data-remove-payment]').forEach(b => b.onclick = () => { readRows(); rows.splice(Number(b.dataset.removePayment), 1); draw(); });
+    enhanceMathInputs(list);
   };
   const toggle = () => {
     const enabled = dialog.querySelector('#isInstallment').checked;
@@ -1635,12 +1788,14 @@ function filterModal() {
       if (next.from && next.to && next.from > next.to) throw Error('Проверь период');
       filters = next;
       render();
+setTimeout(() => { checkStartupPaymentAlerts(); syncNativeNotifications(false); }, 600);
     }
   );
   dialog.querySelector('#clearFilters').onclick = () => {
     filters = { from: '', to: '', category: '', importance: '', search: '', typeGroup: '' };
     dialog.close();
     render();
+setTimeout(() => { checkStartupPaymentAlerts(); syncNativeNotifications(false); }, 600);
   };
   dialog.querySelector('[type=submit]').textContent = 'Применить';
 }
@@ -1661,50 +1816,106 @@ function copiesModal() {
 }
 
 function restoreModal() {
-  modal('Восстановить из файла .json',
-    `<p class="muted">Выбери ранее сохранённый JSON-файл резервной копии Финансиста.</p><input type="file" name="file" accept="application/json,.json" required><div class="note" id="restoreStatus">Ожидание выбора файла…</div>`,
+  modal('Восстановить базу (из текста или файла)',
+    `<p class="muted">Вставь скопированный текст из «Копия текстом» (из старой версии или Telegram) ИЛИ выбери файл <code>.json</code>:</p>` +
+    `<div class="actions section">` +
+      `<button type="button" class="soft small" id="pasteClipboardRestoreBtn">📋 Вставить из буфера обмена</button>` +
+    `</div>` +
+    `<label class="field section"><span>Текст резервной копии JSON</span><textarea id="restoreJsonText" rows="6" placeholder='Вставь сюда скопированный JSON: {"version":1, ...}'></textarea></label>` +
+    `<label class="file-picker-card section" for="restoreFileInput"><span class="file-picker-icon">📂</span><span class="file-picker-text"><b id="restoreFileName">Выбрать файл .json с телефона</b><small>Нажми сюда, чтобы выбрать сохранённую копию из проводника</small></span><input type="file" id="restoreFileInput" name="file" accept="application/json,.json,.txt" hidden></label>` +
+    `<div class="note section" id="restoreStatus">Ждёт вставки текста или выбора файла…</div>`,
     () => {
-      if (!restoreModal.pending) throw Error('Сначала выбери корректный файл');
+      if (!restoreModal.pending) {
+        const rawText = dialog.querySelector('#restoreJsonText')?.value?.trim();
+        if (rawText) {
+          restoreModal.pending = validateState(JSON.parse(rawText));
+        } else {
+          throw Error('Вставь текст JSON или выбери файл резервной копии');
+        }
+      }
       const next = restoreModal.pending;
       validateState(next);
       storageError = '';
       persist(next);
       render();
+setTimeout(() => { checkStartupPaymentAlerts(); syncNativeNotifications(false); }, 600);
     }
   );
   restoreModal.pending = null;
+  const statusEl = dialog.querySelector('#restoreStatus');
+  const errEl = dialog.querySelector('#formError');
+  const textEl = dialog.querySelector('#restoreJsonText');
+
+  const checkRawJson = (raw) => {
+    errEl.textContent = '';
+    if (!raw || !raw.trim()) {
+      restoreModal.pending = null;
+      statusEl.textContent = 'Ждёт вставки текста или выбора файла…';
+      return;
+    }
+    try {
+      const data = validateState(JSON.parse(raw.trim()));
+      restoreModal.pending = data;
+      statusEl.innerHTML = `✅ <b>Копия проверена:</b> счетов — <b>${data.accounts.length}</b>, операций — <b>${data.transactions.length}</b>, смен — <b>${(data.courierShifts || []).length}</b>. Нажми «Сохранить» внизу!`;
+    } catch (err) {
+      restoreModal.pending = null;
+      errEl.textContent = 'Ошибка формата JSON: ' + err.message;
+    }
+  };
+
+  textEl.addEventListener('input', () => checkRawJson(textEl.value));
+
+  dialog.querySelector('#pasteClipboardRestoreBtn').onclick = async () => {
+    try {
+      const clip = await navigator.clipboard.readText();
+      if (clip) {
+        textEl.value = clip;
+        checkRawJson(clip);
+        toast('Текст вставлен из буфера');
+      } else {
+        toast('Буфер обмена пуст — зажми палец в поле и нажми «Вставить»');
+        textEl.focus();
+      }
+    } catch {
+      toast('Зажми палец в текстовом поле ниже и нажми «Вставить»');
+      textEl.focus();
+    }
+  };
+
   dialog.querySelector('[name=file]').onchange = async e => {
     try {
       const file = e.target.files[0];
       if (!file) return;
-      const data = validateState(JSON.parse(await file.text()));
-      restoreModal.pending = data;
-      dialog.querySelector('#restoreStatus').textContent = `Файл проверен: счетов — ${data.accounts.length}, операций — ${data.transactions.length}. Нажми «Сохранить».`;
+      const fnEl = dialog.querySelector('#restoreFileName');
+      if (fnEl) fnEl.textContent = 'Выбран файл: ' + file.name;
+      const text = await file.text();
+      textEl.value = text;
+      checkRawJson(text);
     } catch (err) {
-      dialog.querySelector('#formError').textContent = err.message;
+      errEl.textContent = err.message;
     }
   };
 }
 
 function thumbSheetModal() {
   const activeShifts = state.courierShifts.filter(x => x.startedAt && !x.endedAt);
-  const quickBtns = state.quickActions.map(q => `<button type="button" class="soft" data-thumb-quick="${esc(q.id)}">${esc(q.name)}${q.amount ? ' · ' + rub(q.amount) : ''}</button>`).join('');
+  const quickBtns = state.quickActions.map(q => `<button type="button" class="small soft" data-thumb-quick="${esc(q.id)}">${esc(q.name)}${q.amount ? ' · ' + rub(q.amount) : ''}</button>`).join('');
   modal('Быстрые действия',
     `<div class="thumb-sheet-grid">` +
-      `<button type="button" class="primary thumb-card-btn" data-thumb-tx="expense"><span>💸</span><b>Расход</b><small>Покупка или сплит чека</small></button>` +
-      `<button type="button" class="soft thumb-card-btn" data-thumb-tx="income"><span>💰</span><b>Доход</b><small>Поступление денег</small></button>` +
-      `<button type="button" class="soft thumb-card-btn" data-thumb-tx="lend"><span>🤝</span><b>Дал в долг</b><small>Новому или знакомому</small></button>` +
-      `<button type="button" class="soft thumb-card-btn" data-thumb-tx="transfer"><span>⇄</span><b>Перевод</b><small>Между своими счетами</small></button>` +
+      `<button type="button" class="thumb-card-btn thumb-tone-exp" data-thumb-tx="expense"><span class="thumb-card-ico">💸</span><span class="thumb-card-txt"><b>Расход</b><small>Покупка или сплит</small></span></button>` +
+      `<button type="button" class="thumb-card-btn thumb-tone-inc" data-thumb-tx="income"><span class="thumb-card-ico">💰</span><span class="thumb-card-txt"><b>Доход</b><small>Поступление</small></span></button>` +
+      `<button type="button" class="thumb-card-btn thumb-tone-debt" data-thumb-tx="lend"><span class="thumb-card-ico">🤝</span><span class="thumb-card-txt"><b>Дал в долг</b><small>Новому / знакомому</small></span></button>` +
+      `<button type="button" class="thumb-card-btn thumb-tone-trf" data-thumb-tx="transfer"><span class="thumb-card-ico">⇄</span><span class="thumb-card-txt"><b>Перевод</b><small>Между счетами</small></span></button>` +
     `</div>` +
-    `<div class="thumb-sheet-section"><span class="label">Доставка в 1 касание</span><div class="actions">` +
+    `<div class="thumb-sheet-section"><div class="thumb-section-header">🛵 Доставка в 1 касание</div><div class="actions">` +
       (activeShifts.length ? activeShifts.map(x =>
         `<button type="button" class="primary small" data-thumb-courier="instantTrip1|${esc(x.id)}">⚡ +1 выдача</button>` +
         `<button type="button" class="soft small" data-thumb-courier="instantTrip2|${esc(x.id)}">+2 выдачи</button>` +
         `<button type="button" class="ghost small" data-thumb-courier="shiftExpense|${esc(x.id)}">− Расход смены</button>` +
         `<button type="button" class="ghost small" data-thumb-courier="tip|${esc(x.id)}">+ Чай</button>`
-      ).join('') : `<button type="button" class="primary small" data-thumb-courier="startDeliveryShift|">▶ Начать смену доставки</button><button type="button" class="ghost small" data-thumb-nav="courier">Открыть доставку →</button>`) +
+      ).join('') : `<button type="button" class="primary small" data-thumb-courier="startDeliveryShift|">▶ Начать смену доставки</button><button type="button" class="ghost small" data-thumb-nav="courier">Пульт доставки →</button>`) +
     `</div></div>` +
-    (quickBtns ? `<div class="thumb-sheet-section"><span class="label">Твои шаблоны</span><div class="quick-buttons">${quickBtns}</div></div>` : ''),
+    (quickBtns ? `<div class="thumb-sheet-section"><div class="thumb-section-header">⚡ Быстрые шаблоны</div><div class="quick-buttons">${quickBtns}</div></div>` : ''),
     null,
     'bottom-sheet'
   );
@@ -1723,6 +1934,7 @@ function thumbSheetModal() {
     dialog.close();
     view = b.dataset.thumbNav;
     render();
+setTimeout(() => { checkStartupPaymentAlerts(); syncNativeNotifications(false); }, 600);
     window.scrollTo(0, 0);
   });
   dialog.querySelectorAll('[data-thumb-quick]').forEach(b => b.onclick = () => {
@@ -1730,6 +1942,177 @@ function thumbSheetModal() {
     dialog.close();
     useQuickModal(id);
   });
+}
+
+
+function notificationsModal() {
+  const nf = state.notifications || { enabled: true, dayBefore: true, sameDay: true, overdueNextDay: true, hour: 10 };
+  const dueList = duePaymentNotifications(state);
+  modal('🔔 Уведомления о платежах',
+    `<p class="muted">Выбери, когда приложение должно присылать уведомления по запланированным покупкам, регулярным платежам и рассрочкам:</p>` +
+    `<label class="checks section"><input type="checkbox" name="enabled" ${nf.enabled !== false ? 'checked' : ''}><b>Включить уведомления о платежах</b></label>` +
+    `<div class="notif-rules-box section">` +
+      `<label class="checks"><input type="checkbox" name="dayBefore" ${nf.dayBefore !== false ? 'checked' : ''}>🔔 За 1 день до платежа (напомнить заранее)</label>` +
+      `<label class="checks"><input type="checkbox" name="sameDay" ${nf.sameDay !== false ? 'checked' : ''}>🟠 В день платежа (если ещё не оплачено)</label>` +
+      `<label class="checks"><input type="checkbox" name="overdueNextDay" ${nf.overdueNextDay !== false ? 'checked' : ''}>🔴 На следующий день и далее (если есть просрочка)</label>` +
+    `</div>` +
+    `<div class="formgrid section">` +
+      field('Время утреннего уведомления', `<select name="hour">${[8, 9, 10, 11, 12, 15, 18, 20, 21].map(h => option(String(h), `${String(h).padStart(2, '0')}:00`, String(nf.hour ?? 10))).join('')}</select>`, true) +
+    `</div>` +
+    `<div class="actions section">` +
+      `<button type="button" class="soft small" id="modalTestNotifBtn">🔔 Проверить уведомление сейчас</button>` +
+    `</div>` +
+    `<div class="note section">` +
+      `<b>Статус на сегодня (${date(today())}):</b> ` +
+      (dueList.length
+        ? `<div class="notif-preview-list">${dueList.map(item => `<div class="notif-preview-item"><b>${esc(item.title)}</b><small>${esc(item.body)}</small></div>`).join('')}</div>`
+        : `На сегодня, завтра и по просрочкам неоплаченных платежей нет — тестовая кнопка пришлёт проверочное уведомление.`) +
+    `</div>`,
+    f => {
+      mutate(s => {
+        s.notifications = {
+          ...(s.notifications || {}),
+          enabled: f.get('enabled') === 'on',
+          dayBefore: f.get('dayBefore') === 'on',
+          sameDay: f.get('sameDay') === 'on',
+          overdueNextDay: f.get('overdueNextDay') === 'on',
+          hour: Number(f.get('hour') || 10)
+        };
+      });
+      syncNativeNotifications(true);
+    }
+  );
+  dialog.querySelector('#modalTestNotifBtn').onclick = () => triggerTestNotification();
+}
+
+async function sendImmediateNotification(title, body, idNum = 9001) {
+  let sentNative = false;
+  try {
+    const ln = window.Capacitor?.Plugins?.LocalNotifications;
+    if (ln) {
+      const perm = await ln.requestPermissions();
+      if (perm?.display === 'granted') {
+        await ln.schedule({
+          notifications: [{
+            id: idNum,
+            title,
+            body,
+            schedule: { at: new Date(Date.now() + 800) }
+          }]
+        });
+        sentNative = true;
+      }
+    }
+  } catch {}
+
+  if (!sentNative && 'Notification' in window) {
+    try {
+      let perm = Notification.permission;
+      if (perm === 'default') perm = await Notification.requestPermission();
+      if (perm === 'granted') {
+        const reg = await navigator.serviceWorker?.getRegistration();
+        if (reg && reg.showNotification) {
+          await reg.showNotification(title, { body, icon: './icon-192.png', badge: './icon-192.png', tag: 'financier-' + idNum });
+          sentNative = true;
+        } else {
+          new Notification(title, { body, icon: './icon-192.png' });
+          sentNative = true;
+        }
+      }
+    } catch {}
+  }
+  return sentNative;
+}
+
+async function triggerTestNotification() {
+  const dueList = duePaymentNotifications(state);
+  const sample = dueList[0] || {
+    title: '🔔 Проверка уведомлений Финансист 3.1',
+    body: 'Уведомления работают! Приложение напомнит за 1 день до платежа, в день оплаты и при просрочке.'
+  };
+  const ok = await sendImmediateNotification(sample.title, sample.body, Math.floor(Date.now() % 100000));
+  if (dueList.length > 1) {
+    for (let i = 1; i < Math.min(dueList.length, 3); i++) {
+      await sendImmediateNotification(dueList[i].title, dueList[i].body, Math.floor(Date.now() % 100000) + i);
+    }
+  }
+  toast(ok ? 'Уведомление отправлено в шторку!' : ('🔔 ' + sample.title + ' — ' + sample.body));
+}
+
+async function syncNativeNotifications(requestPerm = false) {
+  const nf = state.notifications || { enabled: true, dayBefore: true, sameDay: true, overdueNextDay: true, hour: 10 };
+  try {
+    const ln = window.Capacitor?.Plugins?.LocalNotifications;
+    if (ln) {
+      if (requestPerm) await ln.requestPermissions();
+      const pendingList = await ln.getPending();
+      if (pendingList?.notifications?.length) {
+        await ln.cancel({ notifications: pendingList.notifications.map(n => ({ id: n.id })) });
+      }
+      if (!nf.enabled) return;
+      const horizon = addDays(today(), 35);
+      const upcoming = upcomingPayments(state, horizon);
+      const toSchedule = [];
+      let nextId = 1000;
+      const hour = Number(nf.hour ?? 10);
+      const nowMs = Date.now();
+
+      for (const p of upcoming) {
+        const makeDate = (dStr) => {
+          const [y, m, d] = dStr.split('-').map(Number);
+          return new Date(y, m - 1, d, hour, 0, 0);
+        };
+        if (nf.dayBefore) {
+          const dt = makeDate(addDays(p.date, -1));
+          if (dt.getTime() > nowMs) {
+            toSchedule.push({
+              id: nextId++,
+              title: '🔔 Завтра платёж: ' + p.name,
+              body: `Завтра нужно оплатить ${rub(p.amount)} (${p.name}).`,
+              schedule: { at: dt }
+            });
+          }
+        }
+        if (nf.sameDay) {
+          const dt = makeDate(p.date);
+          if (dt.getTime() > nowMs) {
+            toSchedule.push({
+              id: nextId++,
+              title: '🟠 Сегодня день платежа: ' + p.name,
+              body: `Сегодня по графику оплата ${rub(p.amount)}. Не забудь отметить в Финансисте!`,
+              schedule: { at: dt }
+            });
+          }
+        }
+        if (nf.overdueNextDay) {
+          const dt = makeDate(addDays(p.date, 1));
+          if (dt.getTime() > nowMs) {
+            toSchedule.push({
+              id: nextId++,
+              title: '🔴 Просрочен платёж: ' + p.name,
+              body: `Вчера был срок оплаты ${rub(p.amount)} (${p.name}). Проверь статус платежа!`,
+              schedule: { at: dt }
+            });
+          }
+        }
+      }
+      if (toSchedule.length) {
+        await ln.schedule({ notifications: toSchedule.slice(0, 60) });
+      }
+    }
+  } catch {}
+}
+
+function checkStartupPaymentAlerts() {
+  const nf = state.notifications;
+  if (!nf || nf.enabled === false) return;
+  const curDay = today();
+  if (nf.lastNotifiedDay === curDay) return;
+  const dueList = duePaymentNotifications(state, curDay);
+  if (!dueList.length) return;
+  state.notifications.lastNotifiedDay = curDay;
+  try { localStorage.setItem(KEY, JSON.stringify(state)); } catch {}
+  sendImmediateNotification(dueList[0].title, dueList[0].body, 8801);
 }
 
 function demoState() {
@@ -1762,7 +2145,7 @@ const viewTitles = {
   home: 'Обзор', transactions: 'Операции', courier: 'Доставка', accounts: 'Счета и долги', more: 'Ещё',
   budget: 'Бюджет и лимиты', reports: 'Отчёты и разбор', settings: 'Настройки', categories: 'Категории',
   quick: 'Быстрые операции', recurring: 'Регулярные платежи', earnings: 'Календарь денег',
-  purchases: 'Покупки и платежи', forecast: 'Прогноз на 30 дней', monthly: 'Итог месяца'
+  purchases: 'Платежи и регулярные', forecast: 'Прогноз на 30 дней', monthly: 'Итог месяца'
 };
 
 function render() {
@@ -1781,16 +2164,21 @@ function render() {
   }).join('');
   const activeShifts = state.courierShifts.filter(x => x.startedAt && !x.endedAt);
 
+  const dueAlertsCount = duePaymentNotifications(state).length;
+  const topRightHtml = view === 'home' && dueAlertsCount
+    ? `<div class="actions"><button type="button" class="soft small" data-action="navigate" data-id="purchases">🔔 Платежи (${dueAlertsCount})</button></div>`
+    : '';
+
   app.innerHTML = `<div class="shell">` +
-    `<aside class="sidebar"><div class="brand"><span class="brandmark">₽</span>Финансист</div><nav class="nav">${nav}</nav><div class="sidebar-note"><span class="statusdot"></span>Локальная база + IndexedDB<br><span class="version">Финансист 3.0 · Android 2026</span></div></aside>` +
+    `<aside class="sidebar"><div class="brand"><span class="brandmark">₽</span>Финансист</div><nav class="nav">${nav}</nav><div class="sidebar-note"><span class="statusdot"></span>Локальная база + IndexedDB<br><span class="version">Финансист 3.1 · Android 2026</span></div></aside>` +
     `<main class="main">` +
-      `<div class="mobile-brand"><span class="actions"><span class="brandmark">₽</span>Финансист</span><span class="pill ${activeShifts.length ? 'essential' : ''}">${activeShifts.length ? '🟢 В смене' : '3.0'}</span></div>` +
-      `<div class="topline"><div><h1>${viewTitles[view] || 'Обзор'}</h1></div><div class="actions"><button type="button" class="ghost small" data-action="lendQuick">🤝 Дал в долг</button><button type="button" class="primary" data-action="addTx">+ Операция</button></div></div>` +
+      `<div class="mobile-brand"><span class="actions"><span class="brandmark">₽</span>Финансист</span><span class="pill ${activeShifts.length ? 'essential' : ''}">${activeShifts.length ? '🟢 В смене' : '3.1'}</span></div>` +
+      `<div class="topline"><div><h1>${viewTitles[view] || 'Обзор'}</h1></div>${topRightHtml}</div>` +
       `${storageError ? `<div class="note negative">${esc(storageError)}</div>` : ''}` +
       `${content}` +
       `<div class="footerhint">${new Date().toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })} · RUB · автономный режим</div>` +
     `</main>` +
-    `<div class="thumb-dock" role="region" aria-label="Быстрые операции под палец"><button type="button" class="thumb-quick-btn" data-action="thumbSheet" aria-label="Быстрые действия">⚡ Быстро</button><button type="button" class="thumb-add-btn primary" data-action="addTx" aria-label="Записать операцию">+ Операция</button></div>` +
+    `<div class="thumb-dock" role="region" aria-label="Быстрые операции под палец"><button type="button" class="thumb-fab-single primary" data-action="thumbSheet" aria-label="Быстрые действия"><span class="thumb-fab-icon">⚡</span><span>Быстро</span></button></div>` +
     `<nav class="bottomnav">${nav}</nav>` +
   `</div>`;
 
@@ -1802,6 +2190,7 @@ function bindEvents() {
   app.querySelectorAll('[data-view]').forEach(b => b.onclick = () => {
     view = b.dataset.view;
     render();
+setTimeout(() => { checkStartupPaymentAlerts(); syncNativeNotifications(false); }, 600);
     window.scrollTo(0, 0);
   });
   app.querySelectorAll('[data-action]').forEach(b => b.onclick = () => {
@@ -1814,6 +2203,7 @@ function bindEvents() {
       filters.search = e.target.value;
       const pos = e.target.selectionStart;
       render();
+setTimeout(() => { checkStartupPaymentAlerts(); syncNativeNotifications(false); }, 600);
       const nextInput = app.querySelector('#liveTxSearch');
       if (nextInput) { nextInput.focus(); nextInput.setSelectionRange(pos, pos); }
     };
@@ -1821,6 +2211,7 @@ function bindEvents() {
   app.querySelectorAll('[data-tx-group]').forEach(b => b.onclick = () => {
     filters.typeGroup = b.dataset.txGroup;
     render();
+setTimeout(() => { checkStartupPaymentAlerts(); syncNativeNotifications(false); }, 600);
   });
 
   app.querySelectorAll('[data-start-tax-preset]').forEach(b => b.onclick = () => {
@@ -1936,6 +2327,9 @@ function action(name, id) {
     case 'addGoal':
     case 'editGoal': return goalModal(state.goals.find(g => g.id === id));
     case 'goalTransfer': return transactionModal(null, { type: 'transfer', toAccountId: state.goals.find(g => g.id === id)?.accountId });
+    case 'setPurchasesTab': purchasesTab = id; render(); return;
+    case 'notificationsModal': return notificationsModal();
+    case 'testNotification': return triggerTestNotification();
     case 'newPurchase': return planModal(null, id || null);
     case 'addPlan':
     case 'editPlan': return planModal(state.plans.find(p => p.id === id));
@@ -2014,6 +2408,7 @@ function action(name, id) {
       if (!from || !to || from > to || to > today()) throw Error('Выбери корректный период до сегодняшнего дня');
       period = { from, to };
       render();
+setTimeout(() => { checkStartupPaymentAlerts(); syncNativeNotifications(false); }, 600);
       return;
     }
     case 'copyTextReport': return copyReadableReport();
@@ -2027,6 +2422,7 @@ function action(name, id) {
         calAnchor = new Date(Date.UTC(y, m - 1 + Number(id), 1, 12)).toISOString().slice(0, 10);
       }
       render();
+setTimeout(() => { checkStartupPaymentAlerts(); syncNativeNotifications(false); }, 600);
       return;
     }
     case 'moneyDay': return dayModal(id);
@@ -2039,7 +2435,7 @@ function action(name, id) {
     case 'setTheme': mutate(s => s.appearance.theme = id); return;
     case 'backup': return download('financier-backup-' + today() + '.json', state);
     case 'shareBackup': return shareBackup();
-    case 'backupText': return modal('Резервная копия JSON', `<textarea rows="14" readonly>${esc(JSON.stringify(state, null, 2))}</textarea>`);
+    case 'backupText': return backupTextModal();
     case 'restore': return restoreModal();
     case 'autoCopies': return copiesModal();
     case 'restoreIDB': {
@@ -2074,46 +2470,99 @@ function tryEvalInput(el) {
   }
 }
 
+function sanitizeNumericMathValue(raw) {
+  return String(raw ?? '').replace(/[^0-9.,+\-*/×÷()]/g, '');
+}
+
 function enhanceMathInputs(root = document) {
-  for (const el of root.querySelectorAll('input[inputmode="decimal"]')) {
+  for (const numEl of root.querySelectorAll('input[type="number"]')) {
+    if (!numEl.getAttribute('inputmode')) {
+      numEl.setAttribute('inputmode', numEl.step && numEl.step !== '1' ? 'decimal' : 'numeric');
+    }
+  }
+
+  for (const el of root.querySelectorAll('input[inputmode="decimal"], input[inputmode="numeric"]')) {
     if (el.dataset.mathReady || el.readOnly || el.disabled) continue;
     el.dataset.mathReady = 'true';
-    el.setAttribute('inputmode', 'text');
-    el.classList.add('math-input');
-    if (!el.dataset.noMathBar && el.parentElement && !el.parentElement.querySelector('.inline-math-bar')) {
-      const bar = document.createElement('div');
-      bar.className = 'inline-math-bar';
-      bar.hidden = true;
-      bar.innerHTML = ['+', '−', '×', '÷', '='].map(op => `<button type="button" tabindex="-1" data-math-op="${op}">${op}</button>`).join('');
-      el.after(bar);
-      bar.addEventListener('pointerdown', e => {
-        const btnEl = e.target.closest('[data-math-op]');
-        if (!btnEl) return;
-        e.preventDefault();
-        const op = btnEl.dataset.mathOp;
-        if (op === '=') {
-          tryEvalInput(el);
-          el.dispatchEvent(new Event('input', { bubbles: true }));
-          el.dispatchEvent(new Event('change', { bubbles: true }));
-        } else {
-          el.value = (el.value || '') + (op === '−' ? '-' : op);
-          el.dispatchEvent(new Event('input', { bubbles: true }));
-        }
-      });
-      el.addEventListener('focus', () => { bar.hidden = false; });
-      el.addEventListener('blur', () => {
-        setTimeout(() => { bar.hidden = true; }, 150);
-        tryEvalInput(el);
-        el.dispatchEvent(new Event('input', { bubbles: true }));
-        el.dispatchEvent(new Event('change', { bubbles: true }));
-      });
-    } else {
-      el.addEventListener('blur', () => {
-        tryEvalInput(el);
-        el.dispatchEvent(new Event('input', { bubbles: true }));
-        el.dispatchEvent(new Event('change', { bubbles: true }));
-      });
+    // Keep inputmode="decimal" (or "numeric") so Android ALWAYS shows the big Numpad without letters!
+    if (el.getAttribute('inputmode') !== 'numeric') {
+      el.setAttribute('inputmode', 'decimal');
     }
+    el.setAttribute('autocomplete', 'off');
+    el.setAttribute('autocorrect', 'off');
+    el.setAttribute('autocapitalize', 'off');
+    el.setAttribute('spellcheck', 'false');
+    el.classList.add('math-input');
+
+    const bar = document.createElement('div');
+    bar.className = 'inline-math-bar';
+    bar.hidden = true;
+    bar.innerHTML =
+      ['+', '−', '×', '÷', '='].map(op => `<button type="button" tabindex="-1" data-math-op="${op}">${op}</button>`).join('') +
+      `<span class="math-live-preview" data-math-preview></span>`;
+
+    if (el.parentElement && !el.parentElement.querySelector('.inline-math-bar')) {
+      el.after(bar);
+    }
+
+    const updatePreview = () => {
+      const cleaned = sanitizeNumericMathValue(el.value);
+      if (cleaned !== el.value) {
+        const pos = el.selectionStart || cleaned.length;
+        el.value = cleaned;
+        try { el.setSelectionRange(pos, pos); } catch {}
+      }
+      const prevEl = bar.querySelector('[data-math-preview]');
+      if (!prevEl) return;
+      const trimmed = cleaned.trim();
+      if (/[+\-*/×÷]/.test(trimmed.slice(1))) {
+        try {
+          const val = calculate(trimmed);
+          prevEl.textContent = '= ' + (Math.round(val * 100) / 100);
+        } catch {
+          prevEl.textContent = '';
+        }
+      } else {
+        prevEl.textContent = '';
+      }
+    };
+
+    el.addEventListener('input', updatePreview);
+
+    bar.addEventListener('pointerdown', e => {
+      const btnEl = e.target.closest('[data-math-op]');
+      if (!btnEl) return;
+      e.preventDefault();
+      const op = btnEl.dataset.mathOp;
+      if (op === '=') {
+        tryEvalInput(el);
+        updatePreview();
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+      } else {
+        const ch = op === '−' ? '-' : op;
+        const start = el.selectionStart ?? (el.value || '').length;
+        const end = el.selectionEnd ?? start;
+        const cur = el.value || '';
+        el.value = cur.slice(0, start) + ch + cur.slice(end);
+        try { el.setSelectionRange(start + ch.length, start + ch.length); } catch {}
+        updatePreview();
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+    });
+
+    el.addEventListener('focus', () => {
+      bar.hidden = false;
+      updatePreview();
+    });
+
+    el.addEventListener('blur', () => {
+      setTimeout(() => { bar.hidden = true; }, 160);
+      tryEvalInput(el);
+      updatePreview();
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+    });
   }
 }
 
@@ -2136,3 +2585,4 @@ if (navigator.storage && navigator.storage.persist) navigator.storage.persist().
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js', { updateViaCache: 'none' }).catch(() => {});
 
 render();
+setTimeout(() => { checkStartupPaymentAlerts(); syncNativeNotifications(false); }, 600);

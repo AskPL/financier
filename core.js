@@ -143,6 +143,19 @@ export function migrateState(s) {
   s.recurringPayments ??= [];
   s.appearance ??= { theme: 'auto' };
   s.reports ??= [];
+  s.notifications ??= {
+    enabled: true,
+    dayBefore: true,
+    sameDay: true,
+    overdueNextDay: true,
+    hour: 10,
+    lastNotifiedDay: ''
+  };
+  s.notifications.enabled ??= true;
+  s.notifications.dayBefore ??= true;
+  s.notifications.sameDay ??= true;
+  s.notifications.overdueNextDay ??= true;
+  s.notifications.hour ??= 10;
 
   if (!s.v12Installed) {
     for (const c of s.categories) c.kind ??= 'expense';
@@ -676,4 +689,46 @@ export function validateState(s) {
   }
   for (const t of s.transactions) validateTransaction(s, t, t.id);
   return s;
+}
+
+
+export function duePaymentNotifications(s, refDate = today()) {
+  const cfg = s.notifications || { enabled: true, dayBefore: true, sameDay: true, overdueNextDay: true, hour: 10 };
+  const tomorrow = addDays(refDate, 1);
+  const allDue = upcomingPayments(s, tomorrow);
+  const items = [];
+  for (const p of allDue) {
+    if (p.date < refDate && cfg.overdueNextDay) {
+      items.push({
+        id: 'overdue_' + p.id + '_' + p.date,
+        stage: 'overdue',
+        date: p.date,
+        name: p.name,
+        amount: p.amount,
+        title: '🔴 Просрочен платёж: ' + p.name,
+        body: `Сумма ${rub(p.amount)} (срок был ${p.date}). Открой Финансист, чтобы отметить оплату или перенести дату.`
+      });
+    } else if (p.date === refDate && cfg.sameDay) {
+      items.push({
+        id: 'today_' + p.id + '_' + p.date,
+        stage: 'today',
+        date: p.date,
+        name: p.name,
+        amount: p.amount,
+        title: '🟠 Сегодня оплата: ' + p.name,
+        body: `Сегодня по плану нужно заплатить ${rub(p.amount)}.`
+      });
+    } else if (p.date === tomorrow && cfg.dayBefore) {
+      items.push({
+        id: 'tomorrow_' + p.id + '_' + p.date,
+        stage: 'tomorrow',
+        date: p.date,
+        name: p.name,
+        amount: p.amount,
+        title: '🔔 Завтра платёж: ' + p.name,
+        body: `Завтра (${p.date}) запланирован платёж «${p.name}» на сумму ${rub(p.amount)}.`
+      });
+    }
+  }
+  return items;
 }
