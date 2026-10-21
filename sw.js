@@ -1,4 +1,4 @@
-const CACHE='financier-v9-ui2026-apk';
+const CACHE='financier-v10-ui2026-v2';
 const FILES=['./','./index.html','./styles.css','./compact.css','./app.js','./finance.js','./features.js','./calendar.js','./finance-v2.js','./upgrade.js','./readable.css','./finance-v3.js','./daily.js','./daily.css','./theme.css','./comfort.js','./comfort-model.js','./comfort.css','./timeline.js','./timeline-model.js','./timeline.css','./manifest.webmanifest','./icon.svg','./icon-192.png','./icon-512.png'];
 self.addEventListener('install',e=>e.waitUntil(caches.open(CACHE).then(c=>Promise.all(FILES.map(u=>fetch(u,{cache:'reload'}).then(r=>c.put(u,r)).catch(()=>c.add(u))))).then(()=>self.skipWaiting())));
 self.addEventListener('activate',e=>e.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(k=>k!==CACHE).map(k=>caches.delete(k)))).then(()=>self.clients.claim())));

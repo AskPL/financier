@@ -573,3 +573,123 @@ dialog.bottom-sheet {
     bottom: calc(136px + env(safe-area-inset-bottom));
   }
 }
+
+/* === Financier 2.0 — Delivery 3-Button Bar ("1", "2", "3+"), Shift Tax & Inline Math === */
+.start-shift-card {
+  display: grid;
+  gap: 14px;
+}
+
+.shift-tax-picker {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 12px 14px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md, 16px);
+}
+
+.tax-preset-btns {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tax-preset-btns input {
+  width: 82px;
+  min-height: 38px;
+  padding: 6px 10px;
+  text-align: center;
+  font-weight: 700;
+}
+
+.quick-trip-toprow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.orders-3btn-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--surface);
+  padding: 5px 8px;
+  border-radius: 14px;
+  border: 1px solid var(--line);
+}
+
+.orders-3btn-group button {
+  min-width: 44px;
+  min-height: 40px;
+  padding: 6px 12px;
+  font-size: 15px;
+  font-weight: 750;
+  border-radius: 10px;
+}
+
+.custom-orders-inp {
+  width: 68px !important;
+  min-height: 40px !important;
+  padding: 6px 8px !important;
+  font-weight: 750;
+  text-align: center;
+}
+
+.quick-amount-inline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 220px;
+}
+
+.quick-amount-inline input {
+  flex: 1;
+  min-width: 120px;
+  min-height: 46px;
+}
+
+.inline-math-bar {
+  display: flex;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.inline-math-bar button {
+  flex: 1;
+  min-height: 34px;
+  padding: 4px 8px;
+  font-size: 16px;
+  font-weight: 700;
+  border-radius: 9px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+}
+
+.split-grid {
+  display: grid;
+  grid-template-columns: 1.2fr 1fr;
+  gap: 10px;
+}
+
+@media (max-width: 760px) {
+  .split-grid {
+    grid-template-columns: 1fr;
+  }
+  .orders-3btn-group {
+    width: 100%;
+    justify-content: space-between;
+  }
+  .orders-3btn-group button {
+    flex: 1;
+  }
+  .quick-amount-inline {
+    width: 100%;
+  }
+}

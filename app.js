@@ -13,7 +13,7 @@ let view='home',filters={from:'',to:'',category:'',importance:'',search:'',typeG
 const app=document.querySelector('#app'),dialog=document.querySelector('#dialog');
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const icon=(name)=>{const paths={home:'<path d="M3 10 12 3l9 7v11H3z"/><path d="M9 21v-8h6v8"/>',transactions:'<path d="M4 7h16m-4-4 4 4-4 4M20 17H4m4-4-4 4 4 4"/>',accounts:'<rect x="3" y="5" width="18" height="15" rx="3"/><path d="M3 9h18m-6 6h3"/>',budget:'<rect x="4" y="5" width="16" height="16" rx="2"/><path d="M8 3v4m8-4v4M4 11h16m-12 4h2m4 0h2m-8 3h2"/>',courier:'<path d="M3 16h14l4-7h-9L9 4H5m1 16a2 2 0 1 0 0-4 2 2 0 0 0 0 4zm12 0a2 2 0 1 0 0-4 2 2 0 0 0 0 4z"/>',reports:'<path d="M4 20V10m8 10V4m8 16v-7M2 22h20"/>',settings:'<path d="M4 6h16M4 12h16M4 18h16"/><circle cx="8" cy="6" r="2"/><circle cx="16" cy="12" r="2"/><circle cx="10" cy="18" r="2"/>'};return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[name]||paths.settings}</svg>`;};
-const views={home:'Обзор',transactions:'Операции',courier:'Курьерка',accounts:'Счета',more:'Ещё'};
+const views={home:'Обзор',transactions:'Операции',courier:'Доставка',accounts:'Счета',more:'Ещё'};
 const option=(id,label,selected)=>`<option value="${esc(id)}" ${id===selected?'selected':''}>${esc(label)}</option>`;
 const accountOpts=(selected,kind)=>state.accounts.filter(a=>!kind||a.kind===kind).map(a=>option(a.id,a.name,selected)).join('');
 const categoryOpts=(selected,kind='expense')=>state.categories.filter(c=>!c.parentId&&(!kind||c.kind===kind)&&(!c.hidden||c.id===selected||state.categories.find(x=>x.id===selected)?.parentId===c.id)).map(c=>option(c.id,c.name,selected)+state.categories.filter(x=>x.parentId===c.id&&(!x.hidden||x.id===selected)).map(x=>option(x.id,'↳ '+x.name,selected)).join('')).join('');
@@ -74,7 +74,62 @@ function transactions(){
 }
 function accounts(){return `<div class="cardhead"><h2>Мои счета</h2><button data-action="addAccount">+ Счёт</button></div><div class="grid three">${state.accounts.map(a=>`<div class="card"><div class="cardhead"><span class="pill">${{card:'Карта',cash:'Наличные',savings:'Накопления'}[a.kind]}</span><button class="small ghost" data-action="editAccount" data-id="${a.id}">Изменить</button></div><h3>${esc(a.name)}</h3><div class="metric ${balance(state,a.id)<0?'negative':''}">${rub(balance(state,a.id))}</div><div class="muted">Начальный остаток ${rub(a.opening)}</div></div>`).join('')||'<div class="card empty">Добавь первый счёт</div>'}</div><div class="cardhead section"><h2>На что коплю</h2><button data-action="addGoal">+ Цель</button></div><div class="grid three">${state.goals.map(g=>{const n=balance(state,g.accountId);return `<div class="card"><div class="cardhead"><h3>${esc(g.name)}</h3><button class="small ghost" data-action="editGoal" data-id="${g.id}">✎</button></div><div class="metric">${rub(n)}</div><div class="muted">из ${rub(g.target)} · ${esc(account(g.accountId))}</div><div class="barrow"><div class="track"><div class="fill" style="width:${Math.max(0,Math.min(100,n/g.target*100))}%"></div></div></div><div class="muted">${g.due?'К '+date(g.due):'Без срока'} · осталось ${rub(Math.max(0,g.target-n))}</div><button class="small soft section" data-action="goalTransfer" data-id="${g.id}">Пополнить переводом</button></div>`;}).join('')||'<div class="card empty">Создай накопительный счёт и привяжи к нему цель</div>'}</div><div class="cardhead section"><h2>Долги</h2><button data-action="addDebt">+ Долг</button></div><div class="grid two">${state.debts.map(d=>`<div class="card"><div class="cardhead"><span class="pill">${d.direction==='owe'?'Я должен':'Мне должны'}</span><button class="small ghost" data-action="editDebt" data-id="${d.id}">Изменить</button></div><h3>${esc(d.name)}</h3><div class="metric">${rub(debtRemaining(state,d.id))}</div><div class="muted">${d.due?'Вернуть до '+date(d.due):'Без срока'}${d.note?' · '+esc(d.note):''}</div><div class="actions section"><button class="small primary" data-action="repayDebt" data-id="${d.id}" ${debtRemaining(state,d.id)<=0?'disabled':''}>${d.direction==='owe'?'Вернуть':'Получить возврат'}</button><button class="small ghost" data-action="increaseDebt" data-id="${d.id}">${d.direction==='owe'?'Взять ещё':'Дать ещё'}</button></div></div>`).join('')||'<div class="card empty">Здесь будут долги и их погашения</div>'}</div>`;}
 function budget(){const m=summary(state,today().slice(0,7)+'-01',today());return `<div class="grid two"><div class="card"><h2>Мой план на месяц</h2><form id="budgetForm"><div class="formgrid">${field('Ожидаемый доход, ₽',input('income',decimal(state.budget.income),'text','inputmode="decimal" required'))}${field('Резерв на накопления до дохода, ₽',input('savings',decimal(state.budget.savings),'text','inputmode="decimal" required'))}${field('Следующий доход',input('nextIncome',state.budget.nextIncome,'date'),true)}</div><div class="note">Резерв — сколько ещё хочешь отложить до следующего дохода. После перевода в накопления уменьши резерв, чтобы не вычитать эти деньги повторно. Ожидаемый доход не увеличивает текущий остаток.</div><h3>Лимиты категорий, ₽</h3><div class="formgrid">${state.categories.map(c=>field(esc(c.name),input('cap_'+c.id,state.budget.caps[c.id]?decimal(state.budget.caps[c.id]):'','text','inputmode="decimal" placeholder="Без лимита"'))).join('')}</div><div class="error" id="budgetError"></div><button class="primary section">Сохранить бюджет</button></form></div><div class="card"><h2>Как идёт месяц</h2>${state.categories.filter(c=>state.budget.caps[c.id]).map(c=>{const cap=state.budget.caps[c.id],spent=m.category[c.id]||0;return `<div class="barrow"><div class="bar-label"><span>${esc(c.name)}</span><strong class="${spent>cap?'negative':''}">${rub(spent)} / ${rub(cap)}</strong></div><div class="track"><div class="fill" style="width:${Math.min(100,spent/cap*100)}%;background:${spent>cap?'#b45e50':'#71917a'}"></div></div></div>`;}).join('')||'<div class="empty">Задай лимиты для нужных категорий</div>'}<div class="separator"></div><div class="label">Доходы минус расходы за месяц</div><div class="metric ${m.net<0?'negative':'positive'}">${rub(m.net)}</div><div class="muted">Переводы и основной долг исключены</div></div></div><div class="card section"><div class="cardhead"><h2>Предстоящие платежи</h2><button data-action="addPlan">+ Платёж</button></div>${[...state.plans].sort((a,b)=>a.date.localeCompare(b.date)).map(p=>`<div class="row"><div class="badge">${p.paidTransactionId?'✓':'◷'}</div><div class="row-main"><div class="row-title">${esc(p.name)}</div><div class="row-meta">${date(p.date)} · ${esc(category(p.categoryId))} · ${p.paidTransactionId?'Оплачен':'Запланирован'}</div></div><div class="amount">${rub(p.amount)}</div><div class="actions">${!p.paidTransactionId?`<button class="small primary" data-action="payPlan" data-id="${p.id}">Оплатить</button>`:''}<button class="small ghost" data-action="editPlan" data-id="${p.id}">✎</button></div></div>`).join('')||'<div class="empty">Добавь аренду, связь или другой будущий платёж</div>'}</div>`;}
-function reports(){const s=summary(state,period.from,period.to),report=activeReport?state.reports.find(r=>r.id===activeReport):state.reports.find(r=>r.period.from===period.from&&r.period.to===period.to);const a=report?.response;return `<div class="card"><div class="filterbar">${field('Начало периода',input('reportFrom',period.from,'date'))}${field('Конец периода',input('reportTo',period.to,'date'))}<button data-action="applyPeriod">Собрать отчёт</button><button class="primary" data-action="aiExport">Запрос нейросети ↗</button><button class="ghost" data-action="aiImport">Вставить ответ</button></div><div class="grid three"><div><div class="label">Доходы</div><div class="metric positive">${rub(s.income)}</div></div><div><div class="label">Расходы</div><div class="metric">${rub(s.expense)}</div></div><div><div class="label">Разница</div><div class="metric ${s.net<0?'negative':''}">${rub(s.net)}</div></div></div>${trend(s.days,period.from,period.to)}</div>${upgrade.reportExtras(period.from,period.to)}<div class="grid two section"><div class="card"><h2>Категории</h2>${bars(s.rootCategory,category,id=>state.categories.find(c=>c.id===id)?.color)+`<details><summary>Подкатегории</summary>${bars(Object.fromEntries(state.categories.filter(c=>c.parentId).map(c=>[c.id,s.category[c.id]||0])),category)}</details>`}</div><div class="card"><h2>Необходимость покупок</h2>${bars(s.importance,id=>IMPORTANCE[id])}<div class="footerhint">Это твоя оценка. «Хотелось» не означает, что покупка была плохой.</div></div></div><div class="card section"><div class="cardhead"><h2>Комментарий нейросети</h2>${report?`<span class="pill">Сохранён ${date(report.created.slice(0,10))}</span>`:'<span class="pill">Ручной обмен JSON</span>'}</div>${a?`<p class="report-summary">${esc(a.summary)}</p>${a.findings.map(f=>`<div class="insight"><span class="pill">${f.kind==='fact'?'По данным':'Предположение'}</span><h3 class="section">${esc(f.title)}</h3><p>${esc(f.comment)}</p></div>`).join('')}${a.recommendations.length?'<h2 class="section">Что можно улучшить</h2>':''}${a.recommendations.map(r=>`<div class="insight"><h3>${esc(r.title)}</h3><p>${esc(r.comment)}</p><span class="inlinemetric">Оценка экономии: ${rub(r.estimatedSavingsCents)}</span></div>`).join('')}${a.missingData.length?`<div class="note"><strong>Чего не хватает:</strong><br>${a.missingData.map(esc).join('<br>')}</div>`:''}${a.forecast?`<p class="muted">${esc(a.forecast.comment)}</p>`:''}<div class="footerhint">Комментарий относится к снимку данных на момент запроса. Новые операции обновляют графики, но не сохранённый ответ нейросети.</div>`:'<div class="empty"><strong>Твои данные → твоя нейросеть</strong>Скопируй готовый JSON-запрос, отправь его в выбранную нейросеть и вставь ответ сюда. Подключение API не требуется.</div>'}${state.reports.length?`<div class="actions section">${state.reports.slice(0,6).map(r=>`<button class="small ghost" data-action="showReport" data-id="${r.id}">${date(r.period.from)} — ${date(r.period.to)}</button>`).join('')}</div>`:''}</div><div class="card section"><h2>История цен товаров</h2><div class="muted">Заполняй позиции при ручном вводе покупки. Одинаковые названия и единицы измерения объединяются.</div>${productTable(s.rows)}</div>`;}
+function buildLocalInsights(s,prev){
+ const list=[];
+ if(prev.expense>0){
+  const diff=s.expense-prev.expense,pct=Math.round(diff/prev.expense*100);
+  list.push({
+   badge:diff>0?'Рост расходов':'Снижение расходов',
+   title:diff>0?`Потрачено на ${rub(diff)} (+${pct}%) больше прошлого периода`:`Экономия ${rub(Math.abs(diff))} (${pct}%) к прошлому периоду`,
+   text:`За этот период расходы составили ${rub(s.expense)} против ${rub(prev.expense)} за предыдущие дни такой же длины.`
+  });
+ }
+ const impulse=(s.importance.unnecessary||0)+(s.importance.wanted||0);
+ if(impulse>0){
+  const share=s.expense?Math.round(impulse/s.expense*100):0;
+  list.push({
+   badge:'Потенциал экономии',
+   title:`«Не нужно» и «Хотелось» съели ${rub(impulse)} (${share}% трат)`,
+   text:`Из них «Не нужно»: ${rub(s.importance.unnecessary||0)}, «Хотелось»: ${rub(s.importance.wanted||0)}. Сокращение этих трат наполовину сохранит ${rub(Math.round(impulse/2))}.`
+  });
+ }
+ const topCat=Object.entries(s.rootCategory).filter(([,v])=>v>0).sort((a,b)=>b[1]-a[1])[0];
+ if(topCat){
+  const share=s.expense?Math.round(topCat[1]/s.expense*100):0;
+  list.push({
+   badge:'Главная статья',
+   title:`«${category(topCat[0])}» — ${rub(topCat[1])} (${share}% всех расходов)`,
+   text:`Самая крупная категория за выбранный период.`
+  });
+ }
+ return list;
+}
+function copyReadableReport(){
+ const start=new Date(period.from+'T12:00:00'),end=new Date(period.to+'T12:00:00'),len=Math.max(1,Math.round((end-start)/86400000)+1);
+ const prevEnd=new Date(start);prevEnd.setDate(prevEnd.getDate()-1);
+ const prevStart=new Date(prevEnd);prevStart.setDate(prevStart.getDate()-len+1);
+ const fmt=d=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+ const cur=summary(state,period.from,period.to),prev=summary(state,fmt(prevStart),fmt(prevEnd));
+ const cats=Object.entries(cur.rootCategory).filter(([,v])=>v>0).sort((a,b)=>b[1]-a[1]).map(([id,v])=>`- ${category(id)}: ${rub(v)}`).join('\n');
+ const imp=Object.entries(cur.importance).filter(([,v])=>v>0).map(([k,v])=>`- ${IMPORTANCE[k]}: ${rub(v)}`).join('\n');
+ const text=`Разбери мой личный бюджет за период ${period.from} — ${period.to} (${len} дн.) по фактам и без воды:\n\n`+
+  `Доходы: ${rub(cur.income)}\nРасходы: ${rub(cur.expense)} (предыдущий период: ${rub(prev.expense)})\nИтог периода: ${rub(cur.net)}\nСвободные деньги сейчас: ${rub(available(state).free)}\n\n`+
+  `Расходы по категориям:\n${cats||'нет'}\n\nОценка необходимости трат:\n${imp||'нет'}\n\n`+
+  `Напиши коротко: 1) Где главный перерасход и дыра в бюджете; 2) Конкретный план действий на следующую неделю в цифрах.`;
+ copy(text);
+}
+function reports(){
+ const start=new Date(period.from+'T12:00:00'),end=new Date(period.to+'T12:00:00'),len=Math.max(1,Math.round((end-start)/86400000)+1);
+ const prevEnd=new Date(start);prevEnd.setDate(prevEnd.getDate()-1);
+ const prevStart=new Date(prevEnd);prevStart.setDate(prevStart.getDate()-len+1);
+ const fmt=d=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+ const s=summary(state,period.from,period.to),prev=summary(state,fmt(prevStart),fmt(prevEnd));
+ const insights=buildLocalInsights(s,prev);
+ return `<div class="card"><div class="filterbar">${field('Начало периода',input('reportFrom',period.from,'date'))}${field('Конец периода',input('reportTo',period.to,'date'))}<button data-action="applyPeriod" class="soft">Показать</button><button class="primary" data-action="copyTextReport">📋 Скопировать выписку для ИИ</button></div><div class="grid three"><div><div class="label">Доходы</div><div class="metric positive">${rub(s.income)}</div></div><div><div class="label">Расходы</div><div class="metric">${rub(s.expense)}</div></div><div><div class="label">Разница</div><div class="metric ${s.net<0?'negative':'positive'}">${rub(s.net)}</div></div></div>${trend(s.days,period.from,period.to)}</div>`+
+ `<div class="card section"><div class="cardhead"><h2>⚡ Авторазбор периода по фактам</h2><span class="pill">Локальный расчёт</span></div>${insights.length?insights.map(ins=>`<div class="insight"><span class="pill">${esc(ins.badge)}</span><h3 class="section">${esc(ins.title)}</h3><p>${esc(ins.text)}</p></div>`).join(''):'<div class="empty">Добавь операции за выбранный период, чтобы увидеть автоматический разбор.</div>'}</div>`+
+ `${upgrade.reportExtras(period.from,period.to)}`+
+ `<div class="grid two section"><div class="card"><h2>Категории расходов</h2>${bars(s.rootCategory,category,id=>state.categories.find(c=>c.id===id)?.color)+`<details><summary>Подкатегории</summary>${bars(Object.fromEntries(state.categories.filter(c=>c.parentId).map(c=>[c.id,s.category[c.id]||0])),category)}</details>`}</div><div class="card"><h2>Необходимость покупок</h2>${bars(s.importance,id=>IMPORTANCE[id])}<div class="footerhint">Показывает, сколько денег уходит на обязательные вещи, а сколько — на импульсивные «Хотелось» и «Не нужно».</div></div></div>`;
+}
 function productTable(rows){const grouped={};for(const r of rows.filter(r=>r.productId)){const key=r.name.trim().toLowerCase()+'|'+r.unit; (grouped[key]??=[]).push(r);}return Object.values(grouped).length?`<div class="tablewrap section"><table><thead><tr><th>Товар</th><th>Покупок</th><th>Первая цена</th><th>Последняя цена</th><th>Изменение</th></tr></thead><tbody>${Object.values(grouped).map(rs=>{rs.sort((a,b)=>a.date.localeCompare(b.date));const first=Math.round(rs[0].amount/rs[0].quantity),last=Math.round(rs.at(-1).amount/rs.at(-1).quantity);return `<tr><td>${esc(rs[0].name)}<div class="row-meta">За ${esc(rs[0].unit)} · ${date(rs[0].date)} — ${date(rs.at(-1).date)}</div></td><td>${rs.length}</td><td>${rub(first)}</td><td>${rub(last)}</td><td>${rs.length>1?((last-first)/first*100).toFixed(1)+'%':'—'}</td></tr>`;}).join('')}</tbody></table></div>`:'<div class="empty">Пока нет покупок с отдельными товарами</div>';}
 function settings(){return `<div class="grid two"><div class="card"><div class="cardhead"><h2>Мои категории</h2><button data-action="addCategory">+ Категория</button></div><div class="categorylist">${state.categories.map(c=>`<div class="row"><span class="dot" style="background:${/^#[0-9a-f]{6}$/i.test(c.color)?c.color:'#71917a'}"></span><div class="row-main row-title">${esc(c.name)}</div><button class="small ghost" data-action="editCategory" data-id="${c.id}">Изменить</button></div>`).join('')}</div></div><div class="card"><h2>Данные на твоём устройстве</h2><p class="muted">Учёт хранится в этом браузере. Очистка данных браузера удалит записи. Сохраняй резервную копию, особенно перед сменой телефона.</p><div class="actions"><button class="primary" data-action="backup">Скачать копию</button><button class="ghost" data-action="restore">Восстановить</button><button class="ghost" data-action="backupText">Копия текстом</button></div><div class="separator"></div><h3>Установка на Android</h3><p class="muted">Открой приложение по HTTPS в Chrome → меню → «Добавить на главный экран» или «Установить приложение». Для первого запуска нужен интернет; затем интерфейс работает офлайн.</p>${installEvent?'<button data-action="install" class="soft">Установить</button>':''}<div class="note">Встроенной синхронизации и шифрования базы нет. JSON-копия содержит финансовые данные — храни её в безопасном месте.</div><div class="actions"><button class="small ghost" data-action="demo">Загрузить пример</button><button class="small danger" data-action="reset">Удалить все данные</button>${storageError?'<button class="small ghost" data-action="rawBackup">Сохранить исходное хранилище</button>':''}</div><div class="footerhint">Финансист 1.6 · без банковских API, QR и распознавания чеков.</div></div></div>`;}
 
@@ -88,12 +143,13 @@ function thumbSheetModal(){
    `<button type="button" class="soft thumb-card-btn" data-thumb-tx="lend"><span>🤝</span><b>Дал в долг</b><small>Новому или знакомому</small></button>`+
    `<button type="button" class="soft thumb-card-btn" data-thumb-tx="transfer"><span>⇄</span><b>Перевод</b><small>Между своими счетами</small></button>`+
   `</div>`+
-  `<div class="thumb-sheet-section"><span class="label">Курьерка в 1 касание</span><div class="actions">`+
+  `<div class="thumb-sheet-section"><span class="label">Доставка в 1 касание</span><div class="actions">`+
    (activeShifts.length?activeShifts.map(x=>
-    `<button type="button" class="primary small" data-thumb-courier="instantTrip1|${esc(x.id)}">⚡ ${esc(x.service)}: +1 выдача</button>`+
-    `<button type="button" class="soft small" data-thumb-courier="delivery|${esc(x.id)}">${esc(x.service)}: с суммой…</button>`+
+    `<button type="button" class="primary small" data-thumb-courier="instantTrip1|${esc(x.id)}">⚡ +1 выдача</button>`+
+    `<button type="button" class="soft small" data-thumb-courier="instantTrip2|${esc(x.id)}">+2 выдачи</button>`+
+    `<button type="button" class="ghost small" data-thumb-courier="shiftExpense|${esc(x.id)}">− Расход смены</button>`+
     `<button type="button" class="ghost small" data-thumb-courier="tip|${esc(x.id)}">+ Чай</button>`
-   ).join(''):`<button type="button" class="primary small" data-thumb-courier="startShift|X5">▶ Начать X5</button><button type="button" class="soft small" data-thumb-courier="startShift|Магнит">▶ Начать Магнит</button><button type="button" class="ghost small" data-thumb-nav="courier">Открыть курьерку →</button>`)+
+   ).join(''):`<button type="button" class="primary small" data-thumb-courier="startDeliveryShift|">▶ Начать смену доставки</button><button type="button" class="ghost small" data-thumb-nav="courier">Открыть доставку →</button>`)+
   `</div></div>`+
   (quickBtns?`<div class="thumb-sheet-section"><span class="label">Твои шаблоны</span><div class="quick-buttons">${quickBtns}</div></div>`:''),
   null,
@@ -107,7 +163,7 @@ function thumbSheetModal(){
  dialog.querySelectorAll('[data-thumb-courier]').forEach(b=>b.onclick=()=>{
   const [act,id]=b.dataset.thumbCourier.split('|');
   dialog.close();
-  if(act==='startShift')view='courier';
+  if(act==='startShift'||act==='startDeliveryShift')view='courier';
   action(act,id);
  });
  dialog.querySelectorAll('[data-thumb-nav]').forEach(b=>b.onclick=()=>{
@@ -127,7 +183,7 @@ function render(){
  const content={home,transactions,accounts,budget,courier,reports,settings,more:upgrade.more,categories:upgrade.categories,quick:daily.quick,recurring:daily.recurring,earnings:timeline.calendar,purchases:timeline.purchases,forecast:timeline.forecast,monthly:timeline.monthly}[view]();
  const nav=Object.entries(views).map(([id,n])=>`<button data-view="${id}" class="${id===view||(id==='more'&&['budget','reports','settings','categories','quick','recurring','earnings','purchases','forecast','monthly'].includes(view))?'active':''}">${icon(id)}<span>${n}</span></button>`).join('');
  const activeShifts=state.courierShifts.filter(x=>x.startedAt&&!x.endedAt);
- app.innerHTML=`<div class="shell"><aside class="sidebar"><div class="brand"><span class="brandmark">₽</span>Финансист</div><nav class="nav">${nav}</nav><div class="sidebar-note"><span class="statusdot"></span>Личное пространство<br>Данные на этом устройстве<br><span class="version">Финансист 1.6 · UI 2026</span></div></aside><main class="main"><div class="mobile-brand"><span class="actions"><span class="brandmark">₽</span>Финансист</span><span class="pill">${activeShifts.length?'🟢 Смена '+esc(activeShifts[0].service):'Личный'}</span></div><div class="topline"><div><h1>${{home:'Обзор',transactions:'Операции',accounts:'Счета и долги',budget:'Бюджет',courier:'Курьерка',reports:'Отчёты',settings:'Настройки',more:'Ещё',categories:'Категории',quick:'Быстрые операции',recurring:'Регулярные платежи',earnings:'Календарь денег',purchases:'Покупки и платежи',forecast:'Прогноз остатка',monthly:'Итог месяца'}[view]}</h1></div><div class="actions"><button class="ghost small" data-action="lendQuick">🤝 Дал в долг</button><button class="primary" data-action="addTx">+ Операция</button></div></div>${storageError?`<div class="note negative">${esc(storageError)}</div>`:''}${content}<div class="footerhint">${new Date().toLocaleDateString('ru-RU',{day:'numeric',month:'long',year:'numeric'})} · RUB · только твои записи</div></main><div class="thumb-dock" role="region" aria-label="Быстрые операции под палец"><button type="button" class="thumb-quick-btn" data-action="thumbSheet" aria-label="Быстрые действия">⚡ Быстро</button><button type="button" class="thumb-add-btn primary" data-action="addTx" aria-label="Записать операцию">+ Операция</button></div><nav class="bottomnav">${nav}</nav></div>`;
+ app.innerHTML=`<div class="shell"><aside class="sidebar"><div class="brand"><span class="brandmark">₽</span>Финансист</div><nav class="nav">${nav}</nav><div class="sidebar-note"><span class="statusdot"></span>Личное пространство<br>Данные на этом устройстве<br><span class="version">Финансист 1.6 · UI 2026</span></div></aside><main class="main"><div class="mobile-brand"><span class="actions"><span class="brandmark">₽</span>Финансист</span><span class="pill">${activeShifts.length?'🟢 В смене':'Личный'}</span></div><div class="topline"><div><h1>${{home:'Обзор',transactions:'Операции',accounts:'Счета и долги',budget:'Бюджет',courier:'Доставка',reports:'Отчёты',settings:'Настройки',more:'Ещё',categories:'Категории',quick:'Быстрые операции',recurring:'Регулярные платежи',earnings:'Календарь денег',purchases:'Покупки и платежи',forecast:'Прогноз остатка',monthly:'Итог месяца'}[view]}</h1></div><div class="actions"><button class="ghost small" data-action="lendQuick">🤝 Дал в долг</button><button class="primary" data-action="addTx">+ Операция</button></div></div>${storageError?`<div class="note negative">${esc(storageError)}</div>`:''}${content}<div class="footerhint">${new Date().toLocaleDateString('ru-RU',{day:'numeric',month:'long',year:'numeric'})} · RUB · только твои записи</div></main><div class="thumb-dock" role="region" aria-label="Быстрые операции под палец"><button type="button" class="thumb-quick-btn" data-action="thumbSheet" aria-label="Быстрые действия">⚡ Быстро</button><button type="button" class="thumb-add-btn primary" data-action="addTx" aria-label="Записать операцию">+ Операция</button></div><nav class="bottomnav">${nav}</nav></div>`;
  bind();features.afterRender();upgrade.afterRender();daily.afterRender();
 }
 
@@ -179,8 +235,8 @@ function action(name,id){
  if(name==='payPlan'){const p=state.plans.find(p=>p.id===id);return transactionModal(null,{type:'expense',amount:p.amount,note:p.name,categoryId:p.categoryId,importance:'essential',planId:p.id});}
  if(name==='applyFilters'){filters={...filters,from:app.querySelector('[name=filterFrom]').value,to:app.querySelector('[name=filterTo]').value,category:app.querySelector('[name=filterCategory]').value,importance:app.querySelector('[name=filterImportance]').value,search:app.querySelector('[name=filterSearch]').value};if(!filters.from||!filters.to||filters.from>filters.to)throw Error('Проверьте период');return render();}
  if(name==='applyPeriod'){const from=app.querySelector('[name=reportFrom]').value,to=app.querySelector('[name=reportTo]').value;if(!from||!to||from>to||to>today())throw Error('Выберите корректный период до сегодняшнего дня');period={from,to};activeReport=null;aiRequest=null;return render();}
- if(name==='aiExport')return aiExportModal();
- if(name==='aiImport')return aiImportModal();
+ if(name==='copyTextReport')return copyReadableReport();
+ if(name==='aiExport')return copyReadableReport();
  if(name==='showReport'){activeReport=id;period=state.reports.find(r=>r.id===id).period;return render();}
  if(name==='backup')return download('financier-backup-'+today()+'.json',state);
  if(name==='shareBackup')return shareBackup();
@@ -234,7 +290,17 @@ function transactionModal(t,defaults={},resuming=false){
   const type=f.get('type');
   if(type==='expense'&&f.get('isTax')==='on'&&!f.get('deductFromCategoryId'))throw Error('Выбери источник дохода для оплаты налога');
   readItems();
-  const rows=type==='expense'?items.map(i=>({...i,productId:i.productId||uid(),amount:cents(i.amount),quantity:Number(String(i.quantity).replace(',','.'))})):[];
+  const totalCents=cents(f.get('amount'));
+  let rows=[];
+  if(type==='expense'&&items.length){
+   const parts=items.map(i=>({productId:i.productId||uid(),name:i.name?.trim()||category(i.categoryId),amount:cents(i.amount),quantity:1,unit:'шт',categoryId:i.categoryId,importance:i.importance||f.get('importance')||'unrated'}));
+   const splitSum=parts.reduce((n,p)=>n+p.amount,0);
+   if(splitSum>totalCents)throw Error('Сумма выделенных категорий превышает общую сумму чека');
+   rows=[...parts];
+   if(splitSum<totalCents){
+    rows.unshift({productId:uid(),name:f.get('note').trim()||category(f.get('categoryId')),amount:totalCents-splitSum,quantity:1,unit:'шт',categoryId:f.get('categoryId'),importance:f.get('importance')||'unrated'});
+   }
+  }
   let resolvedDebtId=f.get('debtId');
   let newDebtToCreate=null;
   if(['borrow','lend'].includes(type)&&resolvedDebtId==='__new__'){
@@ -300,43 +366,31 @@ function transactionModal(t,defaults={},resuming=false){
 
  items=items.map(i=>({...i,amount:draft?i.amount:decimal(i.amount),costSource:i.costSource||'amount'}));
  let manualTotal=draft?draft.manualTotal:!!d.amount,draftFailed=false;
- const readItems=()=>{const el=dialog.querySelector('#itemList');if(el)items=[...el.querySelectorAll('.item')].map((row,i)=>({...items[i],name:row.querySelector('[data-item=name]').value,amount:row.querySelector('[data-item=amount]').value,price:row.querySelector('[data-item=price]').value,costSource:row.dataset.costSource||'amount',quantity:row.querySelector('[data-item=quantity]').value,unit:row.querySelector('[data-item=unit]').value,categoryId:row.querySelector('[data-item=categoryId]').value,importance:row.querySelector('[data-item=importance]').value}));};
+ const readItems=()=>{const el=dialog.querySelector('#itemList');if(el)items=[...el.querySelectorAll('.item')].map((row,i)=>({...items[i],name:row.querySelector('[data-item=name]')?.value||'',amount:row.querySelector('[data-item=amount]').value,quantity:1,unit:'шт',categoryId:row.querySelector('[data-item=categoryId]').value,importance:row.querySelector('[data-item=importance]').value}));};
  function drawItems(){
   const el=dialog.querySelector('#itemList');if(!el)return;
-  el.innerHTML=items.map((i,index)=>`<div class="item" data-cost-source="${i.costSource||'amount'}"><div class="itemgrid">${field('Товар',`<input data-item="name" list="productNamesList" value="${esc(i.name)}" required maxlength="120" class="wide" placeholder="Начни вводить название…">`)}${field('Сумма позиции, ₽',`<input data-item="amount" value="${esc(i.amount)}" inputmode="decimal" required>`)}${field('Цена за единицу, ₽',`<input data-item="price" value="${esc(i.price??(Number(i.quantity)>0?itemCosts(i.amount||0,0,i.quantity).price:''))}" inputmode="decimal">`)}${field('Количество',`<input data-item="quantity" value="${esc(i.quantity)}" inputmode="decimal" required>`)}${field('Единица',`<select data-item="unit">${['шт','кг','л'].map(n=>option(n,n,i.unit)).join('')}</select>`)}${field('Категория',`<select data-item="categoryId" data-hierarchy="expense">${categoryOpts(i.categoryId)}</select>`)}${field('Важность',`<select data-item="importance">${importanceOpts(i.importance)}</select>`)}</div><div class="itemfooter"><span class="muted">Сумма ↔ цена за единицу × количество</span><span class="error" data-cost-error></span><button type="button" class="small danger" data-remove="${index}">Убрать</button></div></div>`).join('');
+  el.innerHTML=items.map((i,index)=>`<div class="item split-item"><div class="split-grid">${field('Категория части чека',`<select data-item="categoryId" data-hierarchy="expense">${categoryOpts(i.categoryId)}</select>`)}${field('Сумма из чека, ₽',`<input data-item="amount" value="${esc(i.amount)}" inputmode="decimal" required placeholder="Например: 800">`)}${field('Важность',`<select data-item="importance">${importanceOpts(i.importance)}</select>`)}${field('Заметка · необязательно',`<input data-item="name" value="${esc(i.name||'')}" maxlength="80" placeholder="Например: бытовая химия">`)}</div><div class="itemfooter"><span class="muted">Остаток чека автоматически пойдёт в основную категорию</span><button type="button" class="small danger" data-remove="${index}">Убрать часть</button></div></div>`).join('');
   el.querySelectorAll('[data-remove]').forEach(b=>b.onclick=()=>{readItems();items.splice(Number(b.dataset.remove),1);drawItems();updateItemTotal();saveDraft();});
-  el.querySelectorAll('.item').forEach(row=>{
-   const nameInp=row.querySelector('[data-item=name]');
-   nameInp.addEventListener('change',()=>{
-    const match=prodMap.get(nameInp.value.trim().toLowerCase());
-    if(match){
-     row.querySelector('[data-item=unit]').value=match.unit;
-     const catSel=row.querySelector('[data-item=categoryId]');
-     if(catSel){
-      catSel.value=match.categoryId;
-      if(catSel._categoryParent){
-       const cObj=state.categories.find(c=>c.id===match.categoryId);
-       catSel._categoryParent.value=cObj?.parentId||cObj?.id||catSel._categoryParent.value;
-       catSel._categoryParent.onchange();
-       catSel.value=match.categoryId;
-      }
-     }
-     row.querySelector('[data-item=importance]').value=match.importance;
-    }
-   });
-   for(const key of ['amount','price','quantity'])row.querySelector('[data-item='+key+']').addEventListener('input',()=>{
-    if(key!=='quantity')row.dataset.costSource=key==='price'?'price':'amount';
-    try{
-     const result=itemCosts(row.querySelector('[data-item=amount]').value,row.querySelector('[data-item=price]').value,row.querySelector('[data-item=quantity]').value,row.dataset.costSource);
-     row.querySelector('[data-item=amount]').value=result.amount;
-     row.querySelector('[data-item=price]').value=result.price;
-     row.querySelector('[data-cost-error]').textContent='';
-    }catch(e){row.querySelector('[data-cost-error]').textContent=e.message;}
-    updateItemTotal();
-   });
-  });
+  el.querySelectorAll('[data-item="amount"]').forEach(inp=>inp.addEventListener('input',updateItemTotal));
  }
- function updateItemTotal(){readItems();const el=dialog.querySelector('#itemTotal');if(!el)return;let total=0;try{for(const i of items)total+=cents(i.amount||'0');}catch{el.textContent='Заполни стоимость позиций';return;}const main=dialog.querySelector('[name=amount]');if(items.length&&!manualTotal)main.value=decimal(total);let entered=0;try{entered=cents(main.value||'0');}catch{}el.innerHTML=items.length?'<b>Товары: '+rub(total)+'</b>'+(total!==entered?' · разница '+rub(entered-total)+' <button type="button" id="takeItemTotal">Взять сумму товаров</button>':' · сумма совпадает'):'';const take=el.querySelector('#takeItemTotal');if(take)take.onclick=()=>{manualTotal=false;updateItemTotal();saveDraft();};}
+ function updateItemTotal(){
+  readItems();
+  const el=dialog.querySelector('#itemTotal');if(!el)return;
+  if(!items.length){el.hidden=true;el.innerHTML='';return;}
+  el.hidden=false;
+  let splitSum=0;
+  try{for(const i of items)splitSum+=cents(i.amount||'0');}catch{el.textContent='Укажи сумму выделенной части';return;}
+  const main=dialog.querySelector('[name=amount]');
+  let total=0;
+  try{total=cents(main.value||'0');}catch{}
+  if(!total&&splitSum>0){main.value=decimal(splitSum);total=splitSum;}
+  const rem=total-splitSum;
+  el.innerHTML=rem>=0
+   ?`<b>Распределение чека:</b> выделено ${rub(splitSum)} · в основной категории останется <b>${rub(rem)}</b>`
+   :`<span class="negative">Выделено (${rub(splitSum)}) больше общей суммы чека (${rub(total)})!</span> <button type="button" class="small soft" id="takeItemTotal">Сделать общую сумму ${rub(splitSum)}</button>`;
+  const take=el.querySelector('#takeItemTotal');
+  if(take)take.onclick=()=>{main.value=decimal(splitSum);updateItemTotal();saveDraft();};
+ }
  function saveDraft(){if(!dialog.open||dialog.querySelector('form')!==draftForm)return;readItems();try{const fields=Object.fromEntries(new FormData(dialog.querySelector('form')));localStorage.setItem(KEY+'.draft',JSON.stringify({editId:t?.id||null,fields,items,manualTotal,defaults:{planId:d.planId},savedAt:Date.now()}));}catch{if(!draftFailed){draftFailed=true;toast('Не удалось сохранить черновик: проверь свободную память браузера');}}}
 
  function drawType(){
@@ -384,7 +438,7 @@ function transactionModal(t,defaults={},resuming=false){
   }else{
    dialog.querySelector('#debtFields').innerHTML='';
   }
-  dialog.querySelector('#expenseFields').innerHTML=type==='expense'?`<div class="formgrid">${categoryControl('expense','categoryId',d.categoryId)}${field('Важность покупки',`<select name="importance">${importanceOpts(d.importance)}</select>`)}</div>${field('Вычесть из доходов · необязательно',`<select name="deductFromCategoryId"><option value="">Не связывать с доходом</option>${categoryOpts(d.deductFromCategoryId||d.taxForCategoryId,'income')}</select>`)}<label class="checks section"><input type="checkbox" name="isTax" ${d.taxForCategoryId?'checked':''}>Это оплата налога — уменьшить резерв</label><div class="cardhead section"><h3>Отдельные товары · необязательно</h3><button class="small ghost" type="button" id="addItem">+ Товар</button></div><div id="itemList" class="items"></div><div id="itemTotal" class="item-total" aria-live="polite"></div><div class="footerhint">Если добавишь товары, их суммы должны совпасть с общей суммой. Категория и важность каждой позиции заменяют общую оценку в отчёте.</div>`:'';
+  dialog.querySelector('#expenseFields').innerHTML=type==='expense'?`<div class="formgrid">${categoryControl('expense','categoryId',d.categoryId)}${field('Важность покупки',`<select name="importance">${importanceOpts(d.importance)}</select>`)}</div>${field('Вычесть из доходов · необязательно',`<select name="deductFromCategoryId"><option value="">Не связывать с доходом</option>${categoryOpts(d.deductFromCategoryId||d.taxForCategoryId,'income')}</select>`)}<label class="checks section"><input type="checkbox" name="isTax" ${d.taxForCategoryId?'checked':''}>Это оплата налога — уменьшить резерв</label><div class="cardhead section"><h3>✂️ Разделить чек на несколько категорий</h3><button class="small soft" type="button" id="addItem">+ Выделить категорию из чека</button></div><div id="itemList" class="items"></div><div id="itemTotal" class="item-total" aria-live="polite" hidden></div>`:'';
   dialog.querySelector('#incomeFields').innerHTML=type==='income'?`<div class="formgrid">${categoryControl('income','incomeCategoryId',d.type==='income'?d.categoryId:state.incomeDefaults.other)}${field('Предварительный налог, % · необязательно',input('taxPercent',d.taxPercent??(d.categoryId===state.incomeDefaults.x5?state.courier.taxPercent??'':''),'number','min="0" max="100" step="0.01"'))}</div><p class="muted">Резерв уменьшает доступные деньги, но не остаток счёта.</p>`:'';
   bindCategoryControl(type,type==='income'?'incomeCategoryId':'categoryId');
   if(type==='expense'){

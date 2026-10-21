@@ -1,10 +1,11 @@
+import {calculate} from './comfort-model.js';
 import {validateTimeline} from './timeline-model.js';
 import {upgradeState,validateV2,taxReserve,incomeBreakdown,monthBudget,shiftTotals} from './finance-v2.js';
 export const IMPORTANCE={unrated:'Не оценено',unnecessary:'Не нужно',wanted:'Хотелось',needed:'Нужно',essential:'Обязательно'};
 export const TYPES={adjustment_in:'Корректировка +',adjustment_out:'Корректировка −',expense:'Расход',income:'Доход',transfer:'Перевод',borrow:'Взял в долг',lend:'Дал в долг',repay_out:'Вернул долг',repay_in:'Получил возврат'};
 export const uid=()=>globalThis.crypto.randomUUID();
 export const today=()=>{const d=new Date();return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;};
-export const cents=v=>{const s=String(v).trim().replace(/\s/g,'').replace(',','.');if(!/^\d+(\.\d{1,2})?$/.test(s))throw Error('Введите сумму с точностью до копеек');const [a,b='']=s.split('.');const n=Number(a)*100+Number(b.padEnd(2,'0'));if(!Number.isSafeInteger(n))throw Error('Слишком большая сумма');return n;};
+export const cents=v=>{let raw=String(v??'').trim();if(/[+\-*/×÷()]/.test(raw.slice(1))){try{raw=String(Math.round(calculate(raw)*100)/100);}catch{}}const s=raw.replace(/\s/g,'').replace(',','.');if(!/^\d+(\.\d{1,2})?$/.test(s))throw Error('Введите сумму с точностью до копеек');const [a,b='']=s.split('.');const n=Number(a)*100+Number(b.padEnd(2,'0'));if(!Number.isSafeInteger(n))throw Error('Слишком большая сумма');return n;};
 export const rub=n=>new Intl.NumberFormat('ru-RU',{style:'currency',currency:'RUB',maximumFractionDigits: n%100?2:0}).format(n/100);
 export const decimal=n=>(n/100).toFixed(2);
 export function initialState(){return migrateState({version:1,courier:{payday:4},courierShifts:[],courierStatements:[],accounts:[],categories:[{id:'food',name:'Продукты',color:'#5d927d'},{id:'home',name:'Дом',color:'#bc945f'},{id:'transport',name:'Транспорт',color:'#7496bd'},{id:'health',name:'Здоровье',color:'#b487a7'},{id:'joy',name:'Для себя',color:'#ca8875'},{id:'other',name:'Прочее',color:'#9a9d9a'}],transactions:[],debts:[],goals:[],plans:[],budget:{income:0,savings:0,nextIncome:'',incomeMode:'courier',caps:{}},reports:[]});}

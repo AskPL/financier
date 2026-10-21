@@ -27,7 +27,7 @@ export function expectedPayouts(s){
  let unknown=0;for(const x of s.courierShifts){if(s.courierStatements.some(r=>r.service===x.service&&r.from<=x.date&&r.to>=x.date))continue;const t=shiftTotals(s,x);unknown+=t.unknown;byService[x.service]=(byService[x.service]||0)+t.earned;}
  // Unlinked received payouts cannot be matched to a work period reliably.
  const unlinked=s.transactions.some(t=>t.type==='income'&&t.source==='courier'&&!t.statementId);
- return {gross:Object.values(byService).reduce((n,v)=>n+v,0),net:Object.entries(byService).reduce((n,[service,v])=>n+v-taxAmount(v,service==='X5'?s.courier.taxPercent:0),0),unknown,unlinked};
+ return {gross:Object.values(byService).reduce((n,v)=>n+v,0),net:Object.entries(byService).reduce((n,[service,v])=>n+v-taxAmount(v,s.courier.taxPercent||0),0),unknown,unlinked};
 }
 export function forecastMoney(s,to,asOf=today()){
  const starting=s.accounts.filter(a=>a.kind!=='savings').reduce((n,a)=>n+balance(s,a.id,asOf),0)-taxReserve(s)-s.budget.savings;

@@ -30,7 +30,7 @@ export function shiftTotals(s,x){
  const tips=s.transactions.filter(t=>t.shiftId===x.id&&t.source==='courierTip');
  const earned=entries.length?entries.reduce((n,e)=>n+(e.amount??0),0):(x.earned??0);
  const tipTotal=tips.reduce((n,t)=>n+t.amount,0);
- const estimatedTax=taxAmount(earned,x.service==='X5'?x.taxPercent:0)+tips.reduce((n,t)=>n+taxAmount(t.amount,t.taxPercent),0);
+ const estimatedTax=taxAmount(earned,x.taxPercent??(x.service==='X5'?s.courier.taxPercent:0))+tips.reduce((n,t)=>n+taxAmount(t.amount,t.taxPercent),0);
  return {trips:x.entries?entries.length:null,unknown:x.entries?entries.filter(e=>e.amount===null).length:x.earned===null?1:0,earned,tips:tipTotal,tax:estimatedTax,net:earned+tipTotal-estimatedTax,orders:entries.length?entries.reduce((n,e)=>n+e.orders,0):x.orders,packages:entries.reduce((n,e)=>n+(e.packages||0),0),hours:x.startedAt?Math.max(0,((x.endedAt||Date.now())-x.startedAt)/3600000):x.hours};
 }
 export function syncShift(x){const entries=x.entries||[];x.earned=entries.reduce((n,e)=>n+(e.amount??0),0);x.orders=entries.reduce((n,e)=>n+e.orders,0);x.hours=x.endedAt?Math.round((x.endedAt-x.startedAt)/36000)/100:0;}
@@ -48,7 +48,7 @@ export function monthBudget(s,asOf=today(),incomeMode='all'){
  const previousMonth=previousEnd.slice(0,7),previousStart=previousMonth+'-01';
  const comparableEnd=previousMonth+'-'+String(Math.min(day,Number(previousEnd.slice(-2)))).padStart(2,'0');
  const current=summary(s,asOf.slice(0,7)+'-01',asOf),previous=summary(s,previousStart,comparableEnd),full=summary(s,previousStart,previousEnd);
- const complete=s.completedMonths.includes(previousMonth);
+ const complete=s.completedMonths.includes(previousMonth)||full.expense>0;
  const denominator=s.transactions.filter(t=>t.type==='income'&&t.date>=asOf.slice(0,7)+'-01'&&t.date<=asOf&&(incomeMode==='all'||s.categories.find(c=>c.id===t.categoryId)?.working||s.categories.find(c=>c.id===s.categories.find(x=>x.id===t.categoryId)?.parentId)?.working)).reduce((n,t)=>n+t.amount,0);
  return {current,previous,previousMonth,previousStart,previousEnd,comparableEnd,complete,denominator,suggested:complete?full.rootCategory:{},delta:current.expense-previous.expense,percent:previous.expense?100*(current.expense-previous.expense)/previous.expense:null};
 }
