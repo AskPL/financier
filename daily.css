@@ -1,0 +1,304 @@
+/* Financier UI 2026 — Hero Free-Money Card, Quick Buttons & Earnings Calendar */
+.free-total {
+  display: grid;
+  gap: 4px;
+  padding: 2px 0 8px;
+  border-left: 0;
+}
+
+.free-total strong {
+  font-size: clamp(36px, 4.8vw, 48px);
+  font-weight: 800;
+  letter-spacing: -0.035em;
+  line-height: 1.08;
+}
+
+.free-total span {
+  font-size: 14px;
+  color: var(--muted);
+}
+
+/* Signature 2026 Hero Bento Styling for the Free Money Section */
+.flat-section:has(.free-total) {
+  background: var(--hero-bg);
+  border-color: var(--hero-border);
+  color: #ffffff;
+  box-shadow: var(--shadow-hero);
+  position: relative;
+  overflow: hidden;
+}
+
+.flat-section:has(.free-total)::before {
+  content: '';
+  position: absolute;
+  width: 280px;
+  height: 280px;
+  background: radial-gradient(circle, rgba(213, 242, 168, 0.16) 0%, transparent 70%);
+  top: -110px;
+  right: -80px;
+  border-radius: 50%;
+  pointer-events: none;
+}
+
+.flat-section:has(.free-total) .section-title {
+  margin-bottom: 6px;
+}
+
+.flat-section:has(.free-total) .section-title h2 {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  color: var(--lime);
+  font-weight: 700;
+}
+
+.flat-section:has(.free-total) .free-total strong {
+  color: #ffffff;
+}
+
+.flat-section:has(.free-total) .free-total strong.negative {
+  color: #ff9e8e;
+}
+
+.flat-section:has(.free-total) .free-total span {
+  color: rgba(255, 255, 255, 0.78);
+}
+
+.flat-section:has(.free-total) > p {
+  display: inline-block;
+  background: rgba(255, 255, 255, 0.11);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  padding: 8px 14px;
+  border-radius: 12px;
+  font-size: 14px;
+  color: rgba(255, 255, 255, 0.94);
+  margin: 8px 0 10px;
+}
+
+.flat-section:has(.free-total) > p b {
+  color: var(--lime);
+}
+
+.flat-section:has(.free-total) details {
+  background: rgba(0, 0, 0, 0.18);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 16px;
+  padding: 6px 16px;
+  margin-top: 10px;
+}
+
+.flat-section:has(.free-total) summary {
+  color: rgba(255, 255, 255, 0.88);
+  font-size: 13.5px;
+}
+
+.flat-section:has(.free-total) .row {
+  border-bottom-color: rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.86);
+  padding: 10px 0;
+}
+
+.flat-section:has(.free-total) .row b {
+  color: #ffffff;
+}
+
+.flat-section:has(.free-total) .muted {
+  color: rgba(255, 255, 255, 0.68);
+  font-size: 12.5px;
+}
+
+/* Quick Action Pills */
+.quick-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.quick-buttons button {
+  min-height: 48px;
+  font-size: 15px;
+  padding: 10px 18px;
+  border-radius: 99px;
+  font-weight: 650;
+}
+
+/* Calendar Period Controls */
+.calendar-toolbar {
+  margin: 14px 0;
+}
+
+.calendar-toolbar select {
+  width: auto;
+  flex: 1;
+  min-width: 160px;
+}
+
+.period-control {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 14px 0;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md, 16px);
+  padding: 6px 8px;
+  box-shadow: var(--shadow-xs);
+}
+
+.period-control > b {
+  font-size: 16px;
+  font-weight: 700;
+  text-align: center;
+}
+
+.period-control button {
+  font-size: 18px;
+  min-width: 44px;
+  min-height: 40px;
+  border-radius: 11px;
+}
+
+.calendar-legend {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  font-size: 13px;
+  font-weight: 600;
+  margin: 14px 0;
+  color: var(--muted);
+}
+
+/* Earnings Calendar Grid */
+.earn-month {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 8px;
+  margin: 14px 0;
+}
+
+.weekday {
+  font-size: 12.5px;
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  text-align: center;
+  padding: 6px 0;
+  color: var(--muted);
+}
+
+.earn-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 4px;
+  background: var(--surface);
+  padding: 10px 4px !important;
+  min-height: 96px !important;
+  font-size: 13px !important;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+  box-shadow: var(--shadow-xs);
+}
+
+.earn-cell:hover {
+  border-color: var(--accent);
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-sm);
+}
+
+.earn-cell b {
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.earn-cell span {
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1.15;
+}
+
+.earn-cell small {
+  font-size: 11px;
+  line-height: 1.2;
+  color: var(--muted);
+}
+
+.earn-cell.is-today {
+  border: 2px solid var(--positive);
+  box-shadow: 0 0 0 3px var(--positive-bg);
+}
+
+.no-record {
+  color: var(--muted);
+  opacity: 0.45;
+}
+
+.earn-week {
+  display: grid;
+  gap: 8px;
+  margin: 14px 0;
+}
+
+.earn-day {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  text-align: left;
+  gap: 12px;
+  width: 100%;
+  padding: 15px 18px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md, 16px);
+  box-shadow: var(--shadow-xs);
+}
+
+.earn-day:hover {
+  border-color: var(--accent);
+  transform: translateY(-1px);
+}
+
+.earn-day > span {
+  display: grid;
+  gap: 4px;
+}
+
+.earn-day > span:last-child {
+  text-align: right;
+  font-size: 14.5px;
+}
+
+.earn-day small {
+  display: block;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+@media (min-width: 761px) {
+  .earn-cell {
+    min-height: 116px !important;
+  }
+  .earn-cell span {
+    font-size: 15px;
+  }
+  .earn-cell small {
+    font-size: 12px;
+  }
+}
+
+@media (max-width: 760px) {
+  .earn-month {
+    gap: 5px;
+  }
+  .earn-cell {
+    min-height: 84px !important;
+    border-radius: 11px;
+    padding: 7px 2px !important;
+  }
+}
