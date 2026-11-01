@@ -103,7 +103,7 @@ export const pending = (p) => !p.paidTransactionId && p.status !== 'cancelled';
 export function initialState() {
   return migrateState({
     version: 1,
-    courier: { payday: 4, taxPercent: 4, taxTips: false },
+    courier: { payday: 4, taxPercent: 4, taxTips: false, fuelPer100: 9.5, fuelPrice: 5850 },
     courierShifts: [],
     courierStatements: [],
     accounts: [],
@@ -133,6 +133,8 @@ export function migrateState(s) {
   s.courier.payday ??= 4;
   s.courier.taxPercent ??= 4;
   s.courier.taxTips ??= false;
+  s.courier.fuelPer100 ??= 9.5;
+  s.courier.fuelPrice ??= 5850;
   s.courierShifts ??= [];
   s.courierStatements ??= [];
   s.budget ??= { income: 0, savings: 0, nextIncome: '', incomeMode: 'courier', caps: {} };
@@ -229,10 +231,40 @@ export function setAccountBalance(s, id, target, record) {
   }
 }
 
+export function isInstallmentDebt(d) {
+  return Boolean(d?.isInstallment || (d?.schedule && d.schedule.length > 0));
+}
+
+// Signed balance for a person: > 0 means they owe the user ("Мне должны"), < 0 means user owes them ("Я должен")
+export function personSignedBalance(s, id) {
+  const d = s.debts.find(x => x.id === id);
+  if (!d) return 0;
+  let bal = (d.direction === 'owed' ? 1 : -1) * (d.opening || 0);
+  for (const t of s.transactions) {
+    if (t.debtId !== id) continue;
+    if (t.type === 'lend' || t.type === 'repay_out') bal += t.amount;
+    else if (t.type === 'borrow' || t.type === 'repay_in') bal -= t.amount;
+  }
+  return bal;
+}
+
+export function personDirection(s, id) {
+  const d = s.debts.find(x => x.id === id);
+  if (!d) return 'owed';
+  if (isInstallmentDebt(d)) return 'owe';
+  const bal = personSignedBalance(s, id);
+  if (bal > 0) return 'owed';
+  if (bal < 0) return 'owe';
+  return d.direction || 'owed';
+}
+
 export function debtRemaining(s, id) {
   const d = s.debts.find(x => x.id === id);
   if (!d) return 0;
-  return d.opening + s.transactions.filter(t => t.debtId === id).reduce((n, t) => n + (['borrow', 'lend'].includes(t.type) ? t.amount : -t.amount), 0);
+  if (!isInstallmentDebt(d)) {
+    return Math.abs(personSignedBalance(s, id));
+  }
+  return Math.max(0, d.opening + s.transactions.filter(t => t.debtId === id).reduce((n, t) => n + (['borrow', 'lend'].includes(t.type) ? t.amount : -t.amount), 0));
 }
 
 export function repaymentTotal(s, id) {
@@ -367,7 +399,7 @@ export function upcomingPayments(s, until = null) {
   const plans = s.plans.filter(p => pending(p) && (!until || p.date <= until)).map(p => ({
     id: p.id, kind: 'plan', name: p.name, date: p.date, amount: p.amount, categoryId: p.categoryId
   }));
-  const debts = s.debts.filter(d => d.direction === 'owe').flatMap(d => {
+  const debts = s.debts.filter(d => personDirection(s, d.id) === 'owe').flatMap(d => {
     if (d.schedule?.length) {
       return installmentStatus(s, d).filter(p => p.remaining > 0 && (!until || p.date <= until)).map(p => ({
         id: p.id, debtId: d.id, kind: 'installment', name: d.name, date: p.date, amount: p.remaining
@@ -383,7 +415,7 @@ export function available(s) {
   const cash = s.accounts.filter(a => a.kind !== 'savings').reduce((n, a) => n + balance(s, a.id), 0);
   const end = incomeHorizon(s);
   const duePlans = s.plans.filter(p => pending(p) && p.date <= end).reduce((n, p) => n + p.amount, 0);
-  const dueDebts = s.debts.filter(d => d.direction === 'owe').reduce((n, d) =>
+  const dueDebts = s.debts.filter(d => personDirection(s, d.id) === 'owe').reduce((n, d) =>
     n + (d.schedule?.length
       ? installmentStatus(s, d).filter(p => p.date <= end).reduce((m, p) => m + p.remaining, 0)
       : (d.due && d.due <= end ? debtRemaining(s, d.id) : 0)), 0);
@@ -404,6 +436,59 @@ export function statementRemaining(s, id) {
   return Math.max(0, r.amount - paid);
 }
 
+export function shiftFuelStats(s, x) {
+  if (!x) return { km: 0, liters: 0, cost: 0, fuelPer100: 0, fuelPrice: 0 };
+  const hasOdo = x.odoStart !== undefined && x.odoStart !== null && x.odoStart !== '' &&
+                 x.odoEnd !== undefined && x.odoEnd !== null && x.odoEnd !== '';
+  let km = 0;
+  if (hasOdo && Number(x.odoEnd) > Number(x.odoStart)) {
+    km = Math.round((Number(x.odoEnd) - Number(x.odoStart)) * 10) / 10;
+  } else if (x.km && Number(x.km) > 0) {
+    km = Math.round(Number(x.km) * 10) / 10;
+  }
+  const fuelPer100 = Number(x.fuelPer100 ?? s.courier?.fuelPer100 ?? 0);
+  const fuelPrice = Number(x.fuelPrice ?? s.courier?.fuelPrice ?? 0);
+  const liters = km > 0 && fuelPer100 > 0 ? Math.round(km * fuelPer100) / 100 : 0;
+  const cost = km > 0 && fuelPer100 > 0 && fuelPrice > 0 ? Math.round((km * fuelPer100 / 100) * fuelPrice) : 0;
+  return { km, liters, cost, fuelPer100, fuelPrice };
+}
+
+export function lastKnownOdometer(s) {
+  const sorted = [...(s.courierShifts || [])].sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0) || b.date.localeCompare(a.date));
+  for (const sh of sorted) {
+    if (sh.odoEnd !== undefined && sh.odoEnd !== null && sh.odoEnd !== '' && Number(sh.odoEnd) > 0) return Number(sh.odoEnd);
+    if (sh.odoStart !== undefined && sh.odoStart !== null && sh.odoStart !== '' && Number(sh.odoStart) > 0) return Number(sh.odoStart);
+  }
+  return '';
+}
+
+export function shiftLunchState(x, now = Date.now()) {
+  const baseRem = x?.lunchRemainingMs !== undefined && x?.lunchRemainingMs !== null ? Number(x.lunchRemainingMs) : 3600000;
+  if (x?.lunchStartedAt) {
+    const elapsed = Math.max(0, now - Number(x.lunchStartedAt));
+    const remainingMs = Math.max(0, baseRem - elapsed);
+    return { active: true, remainingMs, elapsedCurrentMs: elapsed };
+  }
+  return { active: false, remainingMs: Math.max(0, baseRem), elapsedCurrentMs: 0 };
+}
+
+export function averageOrderAmountCents(s, orderCount = 1) {
+  const n = Math.max(1, Number(orderCount) || 1);
+  const baseDefaults = { 1: 21500, 2: 40000, 3: 44000 };
+  const fallback = baseDefaults[n] || (n * 15000);
+  const matching = [];
+  for (const sh of (s.courierShifts || [])) {
+    for (const e of (sh.entries || [])) {
+      if (Number(e.orders) === n && Number.isFinite(e.amount) && e.amount > 0) {
+        matching.push(e.amount);
+      }
+    }
+  }
+  if (!matching.length) return fallback;
+  const avg = Math.round(matching.reduce((acc, v) => acc + v, 0) / matching.length);
+  return avg;
+}
+
 export function shiftTotals(s, x) {
   const entries = x.entries || [];
   const tips = s.transactions.filter(t => t.shiftId === x.id && t.source === 'courierTip');
@@ -411,12 +496,16 @@ export function shiftTotals(s, x) {
   const tipTotal = tips.reduce((n, t) => n + t.amount, 0);
   const taxRate = x.taxPercent ?? (x.service === 'X5' ? s.courier.taxPercent : 0);
   const estimatedTax = taxAmount(earned, taxRate) + tips.reduce((n, t) => n + taxAmount(t.amount, t.taxPercent), 0);
+  const fuel = shiftFuelStats(s, x);
   return {
     trips: x.entries ? entries.length : null,
     unknown: x.entries ? entries.filter(e => e.amount === null).length : (x.earned === null ? 1 : 0),
     earned,
     tips: tipTotal,
     tax: estimatedTax,
+    fuelCost: fuel.cost,
+    fuelKm: fuel.km,
+    fuelLiters: fuel.liters,
     net: earned + tipTotal - estimatedTax,
     orders: entries.length ? entries.reduce((n, e) => n + e.orders, 0) : x.orders,
     packages: entries.reduce((n, e) => n + (e.packages || 0), 0),
@@ -672,11 +761,14 @@ export function validateTransaction(s, t, editingId) {
   }
   if (['borrow', 'lend', 'repay_out', 'repay_in'].includes(t.type)) {
     const d = s.debts.find(x => x.id === t.debtId);
-    if (!d || d.direction !== (['borrow', 'repay_out'].includes(t.type) ? 'owe' : 'owed')) throw Error('Выберите подходящий долг');
-    if (t.type.startsWith('repay')) {
-      const old = s.transactions.find(x => x.id === editingId);
-      const remaining = debtRemaining(s, d.id) + (old?.debtId === d.id && old.type.startsWith('repay') ? old.amount : 0);
-      if (t.amount > remaining) throw Error('Возврат превышает остаток долга');
+    if (!d) throw Error('Выбери человека или рассрочку');
+    if (isInstallmentDebt(d)) {
+      if (!['borrow', 'repay_out'].includes(t.type)) throw Error('Для рассрочки доступен только платёж погашения');
+      if (t.type === 'repay_out') {
+        const old = s.transactions.find(x => x.id === editingId);
+        const remaining = debtRemaining(s, d.id) + (old?.debtId === d.id && old.type === 'repay_out' ? old.amount : 0);
+        if (t.amount > remaining) throw Error('Сумма превышает остаток рассрочки');
+      }
     }
   }
 }

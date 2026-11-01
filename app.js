@@ -6,7 +6,8 @@ import {
   summary, taxReserve, nextPayday, incomeHorizon, upcomingPayments, available, freeMoney,
   statementRemaining, shiftTotals, syncShift, incomeBreakdown, monthBudget, syncRecurring,
   calendarMoney, forecastMoney, monthlyMoney, planFromExpense, validateTransaction, validateState,
-  duePaymentNotifications
+  duePaymentNotifications, isInstallmentDebt, personSignedBalance, personDirection,
+  shiftFuelStats, lastKnownOdometer, shiftLunchState, averageOrderAmountCents
 } from './core.js';
 
 const KEY = 'financier.personal.v1';
@@ -25,6 +26,7 @@ let filters = { from: '', to: '', category: '', importance: '', search: '', type
 let period = { from: today().slice(0, 7) + '-01', to: today() };
 let installEvent = null;
 let quickOrders = 1, quickPlusMode = false;
+let drumRubles = 215, drumKopeks = 0, drumTouched = false;
 let catKind = 'expense', openRootCat = null, budgetIncomeMode = 'all', purchasesTab = 'upcoming';
 let calAnchor = today(), calSpan = 'week', calMode = 'received', monthCursor = today().slice(0, 7);
 
@@ -38,6 +40,32 @@ const localDatetime = (n) => {
   const d = new Date(n);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}T${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 };
+
+const formatShiftElapsed = (x, now = Date.now()) => {
+  if (!x?.startedAt) return '0 мин';
+  const totalMin = Math.max(0, Math.floor(((x.endedAt || now) - x.startedAt) / 60000));
+  const h = Math.floor(totalMin / 60), m = totalMin % 60;
+  return h > 0 ? `${h} ч ${String(m).padStart(2, '0')} мин` : `${m} мин`;
+};
+
+const formatLunchClock = (ms) => {
+  const totalSec = Math.max(0, Math.ceil((ms || 0) / 1000));
+  const m = Math.floor(totalSec / 60), s = totalSec % 60;
+  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+};
+
+const formatDrumString = (r = drumRubles, k = drumKopeks) => {
+  const rubClean = Math.max(0, Math.round(Number(r) || 0));
+  const kopClean = Math.max(0, Math.min(99, Math.round(Number(k) || 0)));
+  return kopClean > 0 ? `${rubClean}.${String(kopClean).padStart(2, '0')}` : `${rubClean}`;
+};
+
+function resetDrumToAverage(ordersCount = quickOrders) {
+  const avgCents = averageOrderAmountCents(state, ordersCount);
+  drumRubles = Math.floor(avgCents / 100);
+  drumKopeks = avgCents % 100;
+  drumTouched = false;
+}
 
 const option = (id, label, selected) => `<option value="${esc(id)}" ${id === selected ? 'selected' : ''}>${esc(label)}</option>`;
 const accountOpts = (selected, kind) => state.accounts.filter(a => !kind || a.kind === kind).map(a => option(a.id, a.name, selected)).join('');
@@ -357,8 +385,9 @@ function activeShiftBanner() {
   const active = state.courierShifts.filter(x => x.startedAt && !x.endedAt);
   if (!active.length) return '';
   return active.map(x => {
-    const t = shiftTotals(state, x), exp = shiftExpensesTotal(x);
-    return `<section class="flat-section shift-live-banner"><div class="section-title"><div class="actions"><span class="statusdot"></span><h2>Доставка · смена идёт</h2><span class="pill">${t.trips || 0} поездок · ${t.orders || 0} выдач · налог ${x.taxPercent ?? 0}%</span></div><div class="actions">${btn('navigate', 'Пульт смены →', 'courier', 'small soft')}</div></div><div class="shift-live-row"><div class="shift-live-amount"><strong>${t.unknown && !t.earned ? 'Ждёт сумм' : rub(t.net - exp)}</strong><small>чистыми · грязными ${rub(t.earned)} · чай ${rub(t.tips)}${exp ? ` · расход −${rub(exp)}` : ''}</small></div><div class="actions">${btn('instantTrip1', '⚡ +1 выдача', x.id, 'small primary')}${btn('instantTrip2', '+2 выдачи', x.id, 'small soft')}${btn('shiftExpense', '− Расход', x.id, 'small ghost')}${btn('tip', '+ Чай', x.id, 'small ghost')}</div></div></section>`;
+    const t = shiftTotals(state, x), exp = shiftExpensesTotal(x), clean = t.net - exp - (t.fuelCost || 0);
+    const lunch = shiftLunchState(x);
+    return `<section class="flat-section shift-live-banner"><div class="section-title"><div class="actions"><span class="statusdot"></span><h2>Смена на линии</h2><span class="pill" data-live-shift-elapsed="${esc(x.id)}">⏱ ${formatShiftElapsed(x)}</span><span class="pill" data-live-lunch-timer="${esc(x.id)}">🍱 ${formatLunchClock(lunch.remainingMs)}</span></div><div class="actions">${btn('navigate', 'Пульт смены →', 'courier', 'small soft')}</div></div><div class="shift-live-row"><div class="shift-live-amount"><strong>${t.unknown && !t.earned ? 'Ждёт сумм' : rub(clean)}</strong><small>чистыми · грязными ${rub(t.earned)}${t.fuelCost ? ` · бензин −${rub(t.fuelCost)}` : ''}${exp ? ` · расход −${rub(exp)}` : ''}</small></div><div class="actions">${btn('instantTrip1', '⚡ +1 выдача', x.id, 'small primary')}${btn('instantTrip2', '+2 выдачи', x.id, 'small soft')}${btn('toggleLunch', lunch.active ? '▶ С обеда' : '🍱 Обед', x.id, 'small ghost')}</div></div></section>`;
   }).join('');
 }
 
@@ -375,8 +404,8 @@ function homeView() {
   const upcoming = upcomingPayments(state, addDays(today(), 7));
   const recent = [...state.transactions].sort((x, y) => y.date.localeCompare(x.date) || y.createdAt - x.createdAt).slice(0, 5);
   const savingsTotal = state.accounts.filter(acc => acc.kind === 'savings').reduce((n, acc) => n + balance(state, acc.id), 0);
-  const oweTotal = state.debts.filter(d => d.direction === 'owe').reduce((n, d) => n + debtRemaining(state, d.id), 0);
-  const owedTotal = state.debts.filter(d => d.direction === 'owed').reduce((n, d) => n + debtRemaining(state, d.id), 0);
+  const oweTotal = state.debts.filter(d => personDirection(state, d.id) === 'owe').reduce((n, d) => n + debtRemaining(state, d.id), 0);
+  const owedTotal = state.debts.filter(d => personDirection(state, d.id) === 'owed').reduce((n, d) => n + debtRemaining(state, d.id), 0);
 
   return (
     (!state.accounts.length ? `<div class="note"><strong>Начнём с твоих счетов.</strong> Добавь основную карту или наличные с текущим остатком. ${btn('addAccount', '+ Добавить счёт', '', 'small primary')}</div>` : '') +
@@ -450,62 +479,160 @@ function courierView() {
   const unconfList = state.courierShifts.filter(x => !state.courierStatements.some(r => r.from <= x.date && r.to >= x.date));
   const unconfirmed = unconfList.reduce((n, x) => n + shiftTotals(state, x).earned, 0);
   const defaultTax = state.courier.taxPercent ?? 4;
+  const fuelPer100 = state.courier.fuelPer100 ?? 9.5;
+  const fuelPrice = state.courier.fuelPrice ?? 5850;
+  const lastOdo = lastKnownOdometer(state);
+  const nowClock = clock(Date.now());
 
-  return `<div class="courier-topbar"><div class="actions">${btn('navigate', '📅 Календарь денег', 'earnings', 'soft')}${btn('addShift', '+ Смена за прошлую дату', '', 'ghost')}${taxReserve(state) > 0 ? btn('payTax', 'Оплатить налог (' + rub(taxReserve(state)) + ')', '', 'ghost') : ''}</div></div>` +
+  if (!drumTouched && active.length) {
+    const avgC = averageOrderAmountCents(state, quickOrders);
+    drumRubles = Math.floor(avgC / 100);
+    drumKopeks = avgC % 100;
+  }
+
+  return `<div class="courier-topbar"><div class="actions">` +
+      `${btn('navigate', '📅 Календарь денег', 'earnings', 'soft')}` +
+      `${btn('fuelSettings', `⛽ ${fuelPer100} л/100 · ${decimal(fuelPrice)} ₽/л`, '', 'ghost')}` +
+      `${btn('addShift', '+ Смена за прошлую дату', '', 'ghost')}` +
+      `${taxReserve(state) > 0 ? btn('payTax', 'Оплатить налог (' + rub(taxReserve(state)) + ')', '', 'ghost') : ''}` +
+    `</div></div>` +
     (!active.length
       ? `<section class="flat-section start-shift-card">` +
-          `<div class="section-title"><div><h2>Начать смену доставки</h2><p class="muted">Выбери налог смены — он сразу учтётся в чистом заработке</p></div><span class="service-badge x5">🛵</span></div>` +
+          `<div class="section-title"><div><h2>Начать смену</h2><p class="muted">Укажи налог, время выхода и пробег на старте</p></div><span class="service-badge x5">🛵</span></div>` +
           `<div class="shift-tax-picker">` +
             `<span class="label">Налог смены, %:</span>` +
             `<div class="tax-preset-btns">` +
               [0, 4, 6].map(p => `<button type="button" class="small ${Number(defaultTax) === p ? 'primary' : 'ghost'}" data-start-tax-preset="${p}">${p}%</button>`).join('') +
-              `<input type="number" id="startShiftTaxInput" value="${esc(defaultTax)}" min="0" max="100" step="0.1" aria-label="Процент налога смены">` +
+              `<input type="number" id="startShiftTaxInput" data-no-math="true" value="${esc(defaultTax)}" min="0" max="100" step="0.1" aria-label="Процент налога смены">` +
             `</div>` +
           `</div>` +
-          `<button type="button" class="primary courier-order" data-action="startDeliveryShift">▶ Начать смену</button>` +
+          `<div class="formgrid">` +
+            `<label class="field"><span>Время начала смены</span><input type="time" id="startShiftTimeInput" value="${esc(nowClock)}" required></label>` +
+            `<label class="field"><span>Пробег на старте, км</span><input type="text" inputmode="decimal" data-no-math="true" id="startShiftOdoInput" value="${esc(lastOdo)}" placeholder="Например: 154200"></label>` +
+          `</div>` +
+          `<button type="button" class="primary courier-order" data-action="startDeliveryShift">▶ Выйти на смену</button>` +
         `</section>`
       : '') +
     active.map(x => {
-      const t = shiftTotals(state, x), exp = shiftExpensesTotal(x), cleanNet = t.net - exp;
+      const t = shiftTotals(state, x), exp = shiftExpensesTotal(x), cleanNet = t.net - exp - (t.fuelCost || 0);
       const hrs = Math.max(0.1, t.hours || 0.1), rate = (t.earned || t.tips) ? Math.round(cleanNet / hrs) : 0, avgOrder = t.orders ? Math.round(t.earned / t.orders) : 0;
-      const is3Plus = quickPlusMode || quickOrders >= 3;
+      const lunch = shiftLunchState(x);
+      const is4Plus = quickPlusMode || quickOrders >= 4;
+      const avgForCurOrders = averageOrderAmountCents(state, quickOrders);
+      const avgRubCenter = Math.floor(avgForCurOrders / 100);
+      const sliderMin = Math.max(10, Math.min(drumRubles - 40, avgRubCenter - 120));
+      const sliderMax = Math.max(drumRubles + 40, avgRubCenter + 160);
+      const prevRub = Math.max(0, drumRubles - 1), nextRub = drumRubles + 1;
+      const prevKop = (drumKopeks + 99) % 100, nextKop = (drumKopeks + 1) % 100;
+
       return `<section class="flat-section shift-cockpit" data-shift-cockpit="${esc(x.id)}">` +
-        `<div class="section-title"><div class="actions"><span class="statusdot"></span><h2>Смена активна</h2><span class="pill">с ${clock(x.startedAt)} (${t.hours.toFixed(1)} ч)</span><button type="button" class="small ghost" data-action="editShiftTax" data-id="${esc(x.id)}">Налог: ${x.taxPercent ?? 0}% ✎</button></div><div class="actions">${btn('finishShift', '⏹ Завершить', x.id, 'danger small')}</div></div>` +
+        `<div class="section-title">` +
+          `<div class="actions">` +
+            `<span class="statusdot"></span>` +
+            `<h2>Смена с ${clock(x.startedAt)}</h2>` +
+            `<span class="pill essential" data-live-shift-elapsed="${esc(x.id)}">⏱ ${formatShiftElapsed(x)}</span>` +
+            `<button type="button" class="small ghost" data-action="editShiftTax" data-id="${esc(x.id)}">Налог ${x.taxPercent ?? 0}% ✎</button>` +
+          `</div>` +
+          `<div class="actions">${btn('finishShift', '⏹ Завершить', x.id, 'danger small')}</div>` +
+        `</div>` +
+
+        `<div class="shift-lunch-odo-bar">` +
+          `<div class="lunch-box ${lunch.active ? 'lunch-running' : ''}">` +
+            `<div class="lunch-info">` +
+              `<span class="lunch-label">🍱 Таймер обеда</span>` +
+              `<strong class="lunch-clock" data-live-lunch-timer="${esc(x.id)}">${formatLunchClock(lunch.remainingMs)}</strong>` +
+            `</div>` +
+            `<button type="button" class="small ${lunch.active ? 'primary' : 'soft'}" data-action="toggleLunch" data-id="${esc(x.id)}">${lunch.active ? '▶ Сняться с обеда' : '⏸ Уйти на обед'}</button>` +
+          `</div>` +
+          `<div class="odo-box">` +
+            `<div class="odo-info">` +
+              `<span class="lunch-label">⛽ Пробег и бензин</span>` +
+              `<strong>${t.fuelKm > 0 ? `${t.fuelKm} км · ${t.fuelLiters} л (−${rub(t.fuelCost)})` : (x.odoStart ? `Старт: ${x.odoStart} км` : 'Не указан')}</strong>` +
+            `</div>` +
+            `<button type="button" class="small ghost" data-action="shiftOdoModal" data-id="${esc(x.id)}">${x.odoEnd ? 'Изменить км' : '+ Пробег км'}</button>` +
+          `</div>` +
+        `</div>` +
+
         `<div class="compact-stats">` +
-          `<div><span>Чистыми на руки</span><b class="${cleanNet < 0 ? 'negative' : 'positive'}">${t.unknown && !t.earned && !exp ? 'Ждёт сумм' : rub(cleanNet)}</b><small class="muted">Налог −${rub(t.tax)}${exp ? ` · расход −${rub(exp)}` : ''}</small></div>` +
+          `<div><span>Чистыми на руки</span><b class="${cleanNet < 0 ? 'negative' : 'positive'}">${t.unknown && !t.earned && !exp && !t.fuelCost ? 'Ждёт сумм' : rub(cleanNet)}</b><small class="muted">Налог −${rub(t.tax)}${t.fuelCost ? ` · бенз −${rub(t.fuelCost)}` : ''}${exp ? ` · расх −${rub(exp)}` : ''}</small></div>` +
           `<div><span>Грязными + чай</span><b>${rub(t.earned + t.tips)}</b><small class="muted">Заказы ${rub(t.earned)} · чай ${rub(t.tips)}</small></div>` +
-          `<div><span>Поездки / выдачи</span><b>${t.trips ?? 0} / ${t.orders ?? 0}</b><small class="muted">${avgOrder ? `≈ ${rub(avgOrder)} за выдачу` : 'Отмечай ниже'}</small></div>` +
+          `<div><span>Поездки / выдачи</span><b>${t.trips ?? 0} / ${t.orders ?? 0}</b><small class="muted">${avgOrder ? `Средняя: ${rub(avgOrder)}` : 'Отмечай ниже'}</small></div>` +
           `<div><span>Чистый темп</span><b>${rate ? rub(rate) + '/ч' : '—'}</b><small class="muted">${t.unknown ? `Без суммы: ${t.unknown}` : 'Все суммы внесены'}</small></div>` +
         `</div>` +
+
         `<div class="quick-trip-box">` +
-          `<div class="quick-trip-toprow">` +
+          `<div class="orders-4btn-row">` +
+            `<span class="label">Выдач в поездке:</span>` +
             `<div class="orders-3btn-group" role="group" aria-label="Количество выдач">` +
-              `<span class="label">Выдач:</span>` +
-              `<button type="button" class="${!is3Plus && quickOrders === 1 ? 'primary' : 'ghost'}" data-quick-order="1" data-shift="${esc(x.id)}">1</button>` +
-              `<button type="button" class="${!is3Plus && quickOrders === 2 ? 'primary' : 'ghost'}" data-quick-order="2" data-shift="${esc(x.id)}">2</button>` +
-              `<button type="button" class="${is3Plus ? 'primary' : 'ghost'}" data-quick-order="3+" data-shift="${esc(x.id)}">3+</button>` +
-              `<input type="number" id="customQuickOrders_${esc(x.id)}" class="custom-orders-inp" value="${is3Plus ? Math.max(3, quickOrders) : 3}" min="3" max="100" ${is3Plus ? '' : 'hidden'} aria-label="Точное число выдач">` +
-            `</div>` +
-            `<div class="quick-amount-inline">` +
-              `<input type="text" inputmode="decimal" data-no-math-bar="true" data-quick-amount="${esc(x.id)}" placeholder="Сумма ₽ (или пусто)">` +
-              `<button type="button" class="primary" data-action="quickAddDelivery" data-id="${esc(x.id)}">+ Записать</button>` +
+              `<button type="button" class="${!is4Plus && quickOrders === 1 ? 'primary' : 'ghost'}" data-quick-order="1" data-shift="${esc(x.id)}">1</button>` +
+              `<button type="button" class="${!is4Plus && quickOrders === 2 ? 'primary' : 'ghost'}" data-quick-order="2" data-shift="${esc(x.id)}">2</button>` +
+              `<button type="button" class="${!is4Plus && quickOrders === 3 ? 'primary' : 'ghost'}" data-quick-order="3" data-shift="${esc(x.id)}">3</button>` +
+              `<button type="button" class="${is4Plus ? 'primary' : 'ghost'}" data-quick-order="4+" data-shift="${esc(x.id)}">4+</button>` +
+              `<input type="number" id="customQuickOrders_${esc(x.id)}" data-no-math="true" class="custom-orders-inp" value="${is4Plus ? Math.max(4, quickOrders) : 4}" min="4" max="100" ${is4Plus ? '' : 'hidden'} aria-label="Точное число выдач">` +
             `</div>` +
           `</div>` +
-          `<div class="quick-presets">` +
-            [180, 250, 320, 400, 500].map(v => `<button type="button" class="small soft" data-preset-amount="${v}" data-shift="${esc(x.id)}">${v} ₽</button>`).join('') +
-            `<button type="button" class="small ghost" data-preset-plus="50" data-shift="${esc(x.id)}">+50 ₽</button>` +
-            `<button type="button" class="small ghost" data-action="quickAddNoAmount" data-id="${esc(x.id)}">Без суммы</button>` +
+
+          `<div class="alarm-Display-box">` +
+            `<div class="alarm-display-header">` +
+              `<span>Точная сумма заказа (средняя для ${quickOrders} выд.: <b>${rub(avgForCurOrders)}</b>)</span>` +
+            `</div>` +
+            `<div class="alarm-main-input-wrap">` +
+              `<input type="text" inputmode="decimal" data-no-math="true" class="alarm-main-input" data-quick-amount="${esc(x.id)}" value="${esc(formatDrumString())}" placeholder="Введи сумму или крути барабан ниже">` +
+              `<span class="alarm-rub-sign">₽</span>` +
+            `</div>` +
+          `</div>` +
+
+          `<div class="alarm-drums-grid" data-drum-root="${esc(x.id)}">` +
+            `<div class="alarm-drum-col">` +
+              `<div class="alarm-drum-title">Рубли (₽)</div>` +
+              `<div class="alarm-drum-wheel" data-wheel-kind="rub" data-shift="${esc(x.id)}">` +
+                `<button type="button" class="drum-step-Neighbor" data-drum-step="rub|-1" data-shift="${esc(x.id)}">${prevRub}</button>` +
+                `<div class="drum-active-val" data-drum-rub-val="${esc(x.id)}">${drumRubles}</div>` +
+                `<button type="button" class="drum-step-Neighbor" data-drum-step="rub|1" data-shift="${esc(x.id)}">${nextRub}</button>` +
+              `</div>` +
+              `<input type="range" class="drum-slider" data-drum-rub-slider="${esc(x.id)}" min="${sliderMin}" max="${sliderMax}" value="${drumRubles}">` +
+              `<div class="drum-fine-btns">` +
+                `<button type="button" class="small ghost" data-drum-step="rub|-10" data-shift="${esc(x.id)}">−10</button>` +
+                `<button type="button" class="small ghost" data-drum-step="rub|-1" data-shift="${esc(x.id)}">−1</button>` +
+                `<button type="button" class="small ghost" data-drum-step="rub|1" data-shift="${esc(x.id)}">+1</button>` +
+                `<button type="button" class="small ghost" data-drum-step="rub|10" data-shift="${esc(x.id)}">+10</button>` +
+              `</div>` +
+            `</div>` +
+
+            `<div class="alarm-drum-sep">:</div>` +
+
+            `<div class="alarm-drum-col">` +
+              `<div class="alarm-drum-title">Копейки (коп)</div>` +
+              `<div class="alarm-drum-wheel" data-wheel-kind="kop" data-shift="${esc(x.id)}">` +
+                `<button type="button" class="drum-step-Neighbor" data-drum-step="kop|-1" data-shift="${esc(x.id)}">${String(prevKop).padStart(2, '0')}</button>` +
+                `<div class="drum-active-val" data-drum-kop-val="${esc(x.id)}">${String(drumKopeks).padStart(2, '0')}</div>` +
+                `<button type="button" class="drum-step-Neighbor" data-drum-step="kop|1" data-shift="${esc(x.id)}">${String(nextKop).padStart(2, '0')}</button>` +
+              `</div>` +
+              `<input type="range" class="drum-slider" data-drum-kop-slider="${esc(x.id)}" min="0" max="99" value="${drumKopeks}">` +
+              `<div class="drum-fine-btns">` +
+                `<button type="button" class="small ghost" data-drum-step="kop|-10" data-shift="${esc(x.id)}">−10</button>` +
+                `<button type="button" class="small ghost" data-drum-step="kop|-1" data-shift="${esc(x.id)}">−1</button>` +
+                `<button type="button" class="small ghost" data-drum-step="kop|1" data-shift="${esc(x.id)}">+1</button>` +
+                `<button type="button" class="small ghost" data-drum-step="kop|10" data-shift="${esc(x.id)}">+10</button>` +
+              `</div>` +
+            `</div>` +
+          `</div>` +
+
+          `<div class="alarm-submit-row">` +
+            `<button type="button" class="primary alarm-save-btn" data-action="quickAddDelivery" data-id="${esc(x.id)}">+ Записать поездку</button>` +
+            `<button type="button" class="ghost" data-action="quickAddNoAmount" data-id="${esc(x.id)}">Без суммы</button>` +
           `</div>` +
         `</div>` +
+
         `<div class="quick-tips-bar">` +
           `<div class="actions"><span class="label">🍵 Чай:</span>` +
             [50, 100, 150, 200].map(v => `<button type="button" class="small soft" data-action="quickTip" data-id="${esc(x.id)}|${v}">+${v} ₽</button>`).join('') +
             `${btn('tip', 'Свой…', x.id, 'small ghost')}` +
           `</div>` +
-          `<div class="actions">${btn('shiftExpense', '− Расход на смене (еда / бензин / проезд)', x.id, 'small ghost')}</div>` +
+          `<div class="actions">${btn('shiftExpense', '− Расход на смене (еда / проезд)', x.id, 'small ghost')}</div>` +
         `</div>` +
         `<div class="shift-trips-section">` +
-          `<div class="cardhead"><h3>Поездки смены (${(x.entries || []).length})</h3>${(x.entries || []).length ? `<button type="button" class="small ghost" data-action="delivery" data-id="${esc(x.id)}">+ Поездка с временем</button>` : ''}</div>` +
+          `<div class="cardhead"><h3>Поездки смены (${(x.entries || []).length})</h3>${(x.entries || []).length ? `<button type="button" class="small ghost" data-action="delivery" data-id="${esc(x.id)}">+ С выбором времени</button>` : ''}</div>` +
           `${deliveryList(x)}` +
         `</div>` +
       `</section>`;
@@ -514,7 +641,7 @@ function courierView() {
       `<div class="compact-stats">` +
         `<div><span>К получению по расчёткам</span><b class="positive">${rub(pendingPayout)}</b><small class="muted">Подтверждено</small></div>` +
         `<div><span>Накоплено по сменам</span><b class="expected-text">${rub(unconfirmed)}</b><small class="muted">Ждёт расчётки (${unconfList.length} смен)</small></div>` +
-        `<div><span>Ближайший четверг</span><b>${date(nextPayday(state))}</b><small class="muted">Ориентир выплаты</small></div>` +
+        `<div><span>Ближайший четверг</span><b>${date(nextPayday(state))}</b><small class="muted">День выплаты</small></div>` +
         `<div><span>Налоговый резерв</span><b>${rub(taxReserve(state))}</b><small class="muted">Отложено с выплат</small></div>` +
       `</div>` +
       `<div class="actions">${btn('courierPayout', '💰 Пришла выплата на карту', '', 'primary')}${btn('autoStatement', '📋 Сверить и внести расчётку', '', 'soft')}</div>`
@@ -522,12 +649,12 @@ function courierView() {
     section('Расчётки по неделям', [...state.courierStatements].sort((a, b) => b.to.localeCompare(a.to)).map(r => {
       const rem = statementRemaining(state, r.id);
       return `<div class="row wrap-row"><div class="row-main"><b>${date(r.from)} — ${date(r.to)}</b><small>${r.note ? esc(r.note) + ' · ' : ''}${rem > 0 ? `Ждёт выплаты: <b class="expected-text">${rub(rem)}</b>` : '✓ Выплачено на счёт'}</small></div><b class="amount">${rub(r.amount)}</b><div class="actions">${rem > 0 ? btn('statementPayout', 'Зачислить на счёт', r.id, 'small primary') : ''}${btn('editStatement', '✎', r.id, 'small ghost')}</div></div>`;
-    }).join('') || '<p class="muted">Когда придёт недельная расчётка, нажми «Сверить и внести расчётку» — приложение само покажет бонус или расхождение со сменами.</p>') +
+    }).join('') || '<p class="muted">Когда придёт недельная расчётка, нажми «Сверить и внести расчётку» — увидишь бонус или расхождение со сменами.</p>') +
     section('История смен', [...closed].sort((a, b) => b.date.localeCompare(a.date)).map(x => {
-      const t = shiftTotals(state, x), exp = shiftExpensesTotal(x), clean = t.net - exp;
+      const t = shiftTotals(state, x), exp = shiftExpensesTotal(x), clean = t.net - exp - (t.fuelCost || 0);
       const rate = t.hours > 0 ? Math.round(clean / t.hours) : 0;
-      return listButton(x.entries ? 'shiftDetails' : 'editShift', `${date(x.date)} · чистыми ${rub(clean)}`, `Поездок: ${t.trips ?? '—'} · выдач: ${t.orders} · грязными ${rub(t.earned)}${t.tips ? ' + чай ' + rub(t.tips) : ''}${exp ? ' − расход ' + rub(exp) : ''} · налог ${x.taxPercent ?? 0}%${rate ? ' · ' + rub(rate) + '/ч' : ''}`, x.id);
-    }).join('') || '<p class="muted">Здесь появится история твоих смен с чистым заработком и темпом ₽/час.</p>');
+      return listButton(x.entries ? 'shiftDetails' : 'editShift', `${date(x.date)} · чистыми ${rub(clean)}`, `Поездок: ${t.trips ?? '—'} · выдач: ${t.orders} · грязными ${rub(t.earned)}${t.tips ? ' + чай ' + rub(t.tips) : ''}${t.fuelCost ? ` − бенз ${rub(t.fuelCost)} (${t.fuelKm} км)` : ''}${exp ? ' − расх ' + rub(exp) : ''} · налог ${x.taxPercent ?? 0}%${rate ? ' · ' + rub(rate) + '/ч' : ''}`, x.id);
+    }).join('') || '<p class="muted">История закрытых смен с чистым заработком, пробегом и темпом ₽/час.</p>');
 }
 
 function accountsView() {
@@ -536,15 +663,56 @@ function accountsView() {
     const cur = balance(state, g.accountId);
     return `<div class="goal-line"><div class="row"><div class="row-main"><div class="row-title">${esc(g.name)}</div><div class="row-meta">${date(g.due)} · ${esc(account(g.accountId))}</div></div><b>${rub(cur)} / ${rub(g.target)}</b>${btn('goalTransfer', '+ Пополнить', g.id, 'small soft')}${btn('editGoal', '✎', g.id, 'small ghost')}</div><div class="track"><div class="fill" style="width:${Math.min(100, Math.max(0, cur / g.target * 100))}%"></div></div></div>`;
   }).join('');
-  const debtRows = state.debts.map(d => {
+
+  const peopleList = state.debts.filter(d => !isInstallmentDebt(d));
+  const instList = state.debts.filter(d => isInstallmentDebt(d));
+
+  const peopleRows = peopleList.map(d => {
+    const signed = personSignedBalance(state, d.id);
+    const rem = Math.abs(signed);
+    const dir = signed > 0 ? 'owed' : signed < 0 ? 'owe' : (d.direction || 'owed');
+    const statusLabel = signed > 0 ? 'Мне должен' : signed < 0 ? 'Я должен' : 'В расчёте';
+    const statusCls = signed > 0 ? 'essential' : signed < 0 ? 'negative' : '';
+    const txCount = state.transactions.filter(t => t.debtId === d.id).length;
+    return `<div class="debt-line">` +
+      `<div class="row">` +
+        `<div class="row-main">` +
+          `<div class="row-title">${esc(d.name)} <span class="pill ${statusCls}">${statusLabel}</span></div>` +
+          `<div class="row-meta">${d.due ? 'Срок: ' + date(d.due) : 'Без срока'}${d.note ? ' · ' + esc(d.note) : ''}</div>` +
+        `</div>` +
+        `<b class="amount ${signed > 0 ? 'positive' : signed < 0 ? 'negative' : ''}">${signed > 0 ? '+' : signed < 0 ? '−' : ''}${rub(rem)}</b>` +
+        `${btn('debtHistory', 'История (' + txCount + ')', d.id, 'small soft')}` +
+        `${btn('editDebt', '✎', d.id, 'small ghost')}` +
+      `</div>` +
+      `<div class="actions debt-actions">` +
+        `${rem > 0 ? btn('repayDebt', dir === 'owe' ? 'Отдать долг' : 'Мне вернули', d.id, 'small primary') : ''}` +
+        `${btn('lendPerson', 'Дал в долг', d.id, 'small soft')}` +
+        `${btn('borrowPerson', 'Взял в долг', d.id, 'small ghost')}` +
+      `</div>` +
+    `</div>`;
+  }).join('');
+
+  const instRows = instList.map(d => {
     const ps = installmentStatus(state, d), pendingInst = ps.filter(p => p.remaining);
     const txCount = state.transactions.filter(t => t.debtId === d.id).length;
-    return `<div class="debt-line"><div class="row"><div class="row-main"><div class="row-title">${esc(d.name)} <span class="pill">${d.schedule?.length ? 'Рассрочка' : d.direction === 'owe' ? 'Я должен' : 'Мне должны'}</span></div><div class="row-meta">${pendingInst.length ? `${pendingInst.length} платежей · ближайший ${date(pendingInst[0].date)} · ${rub(pendingInst[0].remaining)}` : d.schedule?.length ? 'Погашено' : date(d.due)}${d.note ? ' · ' + esc(d.note) : ''}</div></div><b class="amount">${rub(debtRemaining(state, d.id))}</b>${btn('debtHistory', 'История (' + txCount + ')', d.id, 'small soft')}${btn('editDebt', '✎', d.id, 'small ghost')}</div>${d.schedule?.length ? `<details><summary>График платежей рассрочки</summary>${ps.map((p, i) => `<div class="row schedule-row"><span class="row-meta">${i + 1}</span><div class="row-main"><div class="row-title">${date(p.date)}</div><div class="row-meta">${p.remaining === 0 ? 'Оплачен' : p.paid ? 'Частично: ' + rub(p.paid) : p.date < today() ? 'Просрочен' : 'Ожидает оплаты'}</div></div><b>${rub(p.remaining)}</b>${p.remaining ? btn('payInstallment', 'Оплатить', d.id + '|' + p.id, 'small primary') : '<span class="positive">✓</span>'}</div>`).join('')}</details>` : `<div class="actions debt-actions">${debtRemaining(state, d.id) > 0 ? btn('repayDebt', d.direction === 'owe' ? 'Вернуть' : 'Получить возврат', d.id, 'small primary') : ''}${btn('increaseDebt', d.direction === 'owe' ? 'Занять ещё' : 'Дать ещё', d.id, 'small ghost')}</div>`}</div>`;
+    return `<div class="debt-line">` +
+      `<div class="row">` +
+        `<div class="row-main">` +
+          `<div class="row-title">${esc(d.name)} <span class="pill">Рассрочка</span></div>` +
+          `<div class="row-meta">${pendingInst.length ? `Осталось платежей: ${pendingInst.length} · ближайший ${date(pendingInst[0].date)} (${rub(pendingInst[0].remaining)})` : 'Погашена полностью'}${d.note ? ' · ' + esc(d.note) : ''}</div>` +
+        `</div>` +
+        `<b class="amount">${rub(debtRemaining(state, d.id))}</b>` +
+        `${btn('debtHistory', 'История (' + txCount + ')', d.id, 'small soft')}` +
+        `${btn('editInstallment', '✎', d.id, 'small ghost')}` +
+      `</div>` +
+      `<details><summary>График платежей (${ps.length})</summary>${ps.map((p, i) => `<div class="row schedule-row"><span class="row-meta">${i + 1}</span><div class="row-main"><div class="row-title">${date(p.date)}</div><div class="row-meta">${p.remaining === 0 ? 'Оплачен' : p.paid ? 'Частично: ' + rub(p.paid) : p.date < today() ? 'Просрочен' : 'По графику'}</div></div><b>${rub(p.remaining)}</b>${p.remaining ? btn('payInstallment', 'Оплатить', d.id + '|' + p.id, 'small primary') : '<span class="positive">✓</span>'}</div>`).join('')}</details>` +
+    `</div>`;
   }).join('');
 
   return section('Мои счета', accRows || '<p class="muted empty-line">Добавь карту или наличные</p>', btn('addAccount', '+ Счёт', '', 'small primary')) +
     section('Цели и накопления', goalRows || '<p class="muted empty-line">Привяжи цель к накопительному счёту</p>', btn('addGoal', '+ Цель', '', 'small soft')) +
-    section('Долги и рассрочки', debtRows || '<p class="muted empty-line">Новый долг также создаётся прямо из окна «Дал / взял в долг»</p>', btn('addDebt', '+ Долг / рассрочка', '', 'small soft'));
+    section('🤝 Долги (люди)', peopleRows || '<p class="muted empty-line">Добавь человека здесь или прямо при записи операции</p>', btn('addDebt', '+ Человек', '', 'small primary')) +
+    section('💳 Рассрочки и графики', instRows || '<p class="muted empty-line">Добавь рассрочку с разбивкой платежей по датам</p>', btn('addInstallment', '+ Рассрочка', '', 'small soft'));
 }
 
 function moreView() {
@@ -816,9 +984,9 @@ function settingsView() {
         `${btn('restoreIDB', 'Восстановить из IndexedDB', '', 'ghost')}` +
       `</div>`
     ) +
-    section('Налог доставки и категории',
-      `<p>Ставка налога по умолчанию: <b>${state.courier.taxPercent ?? 0}%</b> · В налоговом резерве: <b>${rub(taxReserve(state))}</b></p>` +
-      `<div class="actions">${btn('taxSettings', 'Настроить % налога', '', 'soft')}${btn('payTax', 'Записать оплату налога', '', 'ghost')}${btn('navigate', 'Категории →', 'categories', 'ghost')}</div>`
+    section('Доставка: налог и расход бензина',
+      `<p>Налог по умолчанию: <b>${state.courier.taxPercent ?? 0}%</b> (в резерве: <b>${rub(taxReserve(state))}</b>) · Авто: <b>${state.courier.fuelPer100 ?? 9.5} л/100 км</b> по <b>${decimal(state.courier.fuelPrice ?? 5850)} ₽/л</b></p>` +
+      `<div class="actions">${btn('fuelSettings', '⛽ Расход и цена бензина', '', 'primary')}${btn('taxSettings', 'Настроить % налога', '', 'soft')}${btn('payTax', 'Оплата налога', '', 'ghost')}${btn('navigate', 'Категории →', 'categories', 'ghost')}</div>`
     ) +
     section('Обслуживание и демо-режим',
       `<div class="actions">${btn('refreshApp', '🔄 Обновить кэш приложения', '', 'soft')}${btn('demo', 'Загрузить демо-данные', '', 'ghost')}${btn('reset', 'Очистить все данные', '', 'danger small')}</div>` +
@@ -925,11 +1093,11 @@ function transactionModal(t, defaults = {}, resuming = false) {
 
     let resolvedDebtId = f.get('debtId');
     let newDebtToCreate = null;
-    if (['borrow', 'lend'].includes(type) && resolvedDebtId === '__new__') {
+    if (['borrow', 'lend', 'repay_out', 'repay_in'].includes(type) && resolvedDebtId === '__new__') {
       const newName = (f.get('newDebtName') || '').trim();
       if (!newName) throw Error('Введи имя человека');
-      const dir = type === 'borrow' ? 'owe' : 'owed';
-      const existing = state.debts.find(x => x.direction === dir && x.name.trim().toLowerCase() === newName.toLowerCase());
+      const dir = ['borrow', 'repay_out'].includes(type) ? 'owe' : 'owed';
+      const existing = state.debts.find(x => !isInstallmentDebt(x) && x.name.trim().toLowerCase() === newName.toLowerCase());
       if (existing) {
         resolvedDebtId = existing.id;
       } else {
@@ -1065,26 +1233,40 @@ function transactionModal(t, defaults = {}, resuming = false) {
     const type = dialog.querySelector('[name=type]').value;
     dialog.querySelector('#transferFields').innerHTML = type === 'transfer' ? `<span>Куда перевести</span><select name="toAccountId">${accountOpts(d.toAccountId)}</select>` : '';
     if (['borrow', 'lend', 'repay_out', 'repay_in'].includes(type)) {
-      const dir = ['borrow', 'repay_out'].includes(type) ? 'owe' : 'owed';
-      const canNew = ['borrow', 'lend'].includes(type);
-      const list = state.debts.filter(x => x.direction === dir);
-      const defaultNew = canNew && (d.debtId === '__new__' || !list.length);
+      const canNew = true;
+      const people = state.debts.filter(x => !isInstallmentDebt(x));
+      const installments = type === 'repay_out' ? state.debts.filter(x => isInstallmentDebt(x)) : [];
+      const list = [...people, ...installments];
+      const defaultNew = d.debtId === '__new__' || !list.length;
       const selectedDebt = defaultNew ? '__new__' : (d.debtId || list[0]?.id || '');
+      const describeDebtOption = (x) => {
+        if (isInstallmentDebt(x)) return `💳 ${x.name} (рассрочка · остаток ${rub(debtRemaining(state, x.id))})`;
+        const signed = personSignedBalance(state, x.id);
+        if (signed > 0) return `🤝 ${x.name} · мне должен ${rub(signed)}`;
+        if (signed < 0) return `🤝 ${x.name} · я должен ${rub(Math.abs(signed))}`;
+        return `🤝 ${x.name} · в расчёте (0 ₽)`;
+      };
+      const labelTitle = {
+        lend: 'Кому даёшь в долг',
+        borrow: 'У кого берёшь в долг (включая тех, кто должен тебе)',
+        repay_in: 'Кто вернул тебе долг',
+        repay_out: 'Кому возвращаешь долг или рассрочку'
+      }[type];
+
       dialog.querySelector('#debtFields').innerHTML =
-        `<div class="debt-field-header"><span>${type === 'lend' ? 'Кому даёшь в долг' : type === 'borrow' ? 'У кого занимаешь' : 'Выбери долг для возврата'}</span>${canNew ? `<button type="button" class="small soft" id="btnToggleNewDebt">${selectedDebt === '__new__' && list.length ? 'Выбрать из списка' : '+ Новый человек'}</button>` : ''}</div>` +
+        `<div class="debt-field-header"><span>${labelTitle}</span><button type="button" class="small soft" id="btnToggleNewDebt">${selectedDebt === '__new__' && list.length ? 'Выбрать из списка' : '+ Новый человек'}</button></div>` +
         `<select name="debtId" id="txDebtSelect" required>` +
-          `${!canNew ? '<option value="">Выберите долг</option>' : ''}` +
-          `${list.map(x => option(x.id, `${x.name} · остаток ${rub(debtRemaining(state, x.id))}`, selectedDebt)).join('')}` +
-          `${canNew ? option('__new__', '➕ Новый человек / создать прямо здесь…', selectedDebt) : ''}` +
+          `${list.map(x => option(x.id, describeDebtOption(x), selectedDebt)).join('')}` +
+          `${option('__new__', '➕ Новый человек / создать прямо здесь…', selectedDebt)}` +
         `</select>` +
-        (canNew ? `<div id="inlineNewDebtBox" class="inline-debt-box" ${selectedDebt === '__new__' ? '' : 'hidden'}>` +
+        `<div id="inlineNewDebtBox" class="inline-debt-box" ${selectedDebt === '__new__' ? '' : 'hidden'}>` +
           `<div class="formgrid">` +
-            `${field(type === 'lend' ? 'Имя (кому даёшь в долг)' : 'Имя (у кого занимаешь)', `<input name="newDebtName" type="text" maxlength="80" placeholder="Например: Максим, коллега" value="${esc(d.newDebtName || '')}" ${selectedDebt === '__new__' ? 'required' : ''}>`, true)}` +
+            `${field('Имя человека', `<input name="newDebtName" type="text" maxlength="80" placeholder="Например: Максим, Алексей" value="${esc(d.newDebtName || '')}" ${selectedDebt === '__new__' ? 'required' : ''}>`, true)}` +
             `${field('Срок возврата · необязательно', `<input name="newDebtDue" type="date" value="${esc(d.newDebtDue || '')}">`)}` +
-            `${field('Заметка к долгу · необязательно', `<input name="newDebtNote" type="text" maxlength="120" placeholder="До пятницы / на карту" value="${esc(d.newDebtNote || '')}">`)}` +
+            `${field('Заметка · необязательно', `<input name="newDebtNote" type="text" maxlength="120" placeholder="До пятницы / на карту" value="${esc(d.newDebtNote || '')}">`)}` +
           `</div>` +
-          `<small class="muted">Профиль человека создастся автоматически во вкладке «Счета» вместе с операцией.</small>` +
-        `</div>` : (!list.length ? `<span class="muted">Нет активных долгов в этом направлении.</span>` : ''));
+          `<small class="muted">Единый профиль человека: баланс сам пересчитывается в обе стороны.</small>` +
+        `</div>`;
 
       const sel = dialog.querySelector('#txDebtSelect');
       const box = dialog.querySelector('#inlineNewDebtBox');
@@ -1255,12 +1437,13 @@ function categoryModal(c, parentId = null) {
   }
 }
 
-function debtModal(d) {
+function debtModal(d, forceInstallment = false) {
   const paid = d ? repaymentTotal(state, d.id) : 0;
   let rows = structuredClone(d?.schedule || []), base = d?.schedulePaidBase || 0;
+  const isInst = d ? isInstallmentDebt(d) : forceInstallment;
   const hasTx = d && state.transactions.some(t => t.debtId === d.id);
 
-  modal(d ? 'Настройки долга / рассрочки' : 'Новый долг или рассрочка',
+  modal(d ? (isInst ? 'Настройки рассрочки' : 'Профиль человека (долги)') : (isInst ? 'Новая рассрочка с графиком' : 'Новый человек (долги)'),
     `<div class="formgrid">` +
       field('Имя человека или название', input('name', d?.name || '', 'text', 'required maxlength="80"'), true) +
       field('Направление', `<select name="direction" ${hasTx ? 'disabled' : ''}>${option('owe', 'Я должен', d?.direction || 'owe')}${option('owed', 'Мне должны', d?.direction)}</select>`) +
@@ -1268,7 +1451,7 @@ function debtModal(d) {
       field('Срок возврата', input('due', d?.due || '', 'date')) +
       field('Заметка', input('note', d?.note || '')) +
     `</div>` +
-    `<label class="checks section"><input type="checkbox" id="isInstallment" ${rows.length ? 'checked' : ''}>Рассрочка с графиком платежей</label>` +
+    `<label class="checks section" ${isInst ? '' : 'hidden'}><input type="checkbox" id="isInstallment" ${isInst || rows.length ? 'checked' : ''}>Рассрочка с графиком платежей</label>` +
     `<div id="scheduleControls">` +
       `<div class="formgrid section">${field('Платежей', input('count', (d ? installmentStatus(state, d).filter(p => p.remaining > 0).length : 0) || 6, 'number', 'min="1" max="120"'))}${field('Первый платёж', input('firstDate', rows[0]?.date || today(), 'date'))}${field('Интервал', `<select name="interval"><option value="week">Каждую неделю</option><option value="fortnight">Раз в 2 недели</option><option value="month">Каждый месяц</option></select>`)}</div>` +
       `<button type="button" id="generateSchedule" class="soft small section">Разбить остаток поровну</button>` +
@@ -1279,7 +1462,7 @@ function debtModal(d) {
     f => {
       const use = dialog.querySelector('#isInstallment').checked;
       if (use) readRows();
-      const data = { id: d?.id || uid(), name: f.get('name').trim(), direction: f.get('direction') || d.direction, opening: cents(f.get('opening')), due: f.get('due'), note: f.get('note').trim(), schedule: use ? rows : [], schedulePaidBase: use ? base : 0 };
+      const data = { id: d?.id || uid(), name: f.get('name').trim(), direction: use ? 'owe' : (f.get('direction') || d?.direction || 'owed'), isInstallment: use, opening: cents(f.get('opening')), due: f.get('due'), note: f.get('note').trim(), schedule: use ? rows : [], schedulePaidBase: use ? base : 0 };
       if (!data.name) throw Error('Введите имя');
       if (use && !rows.length) throw Error('Сформируй график платежей');
       mutate(s => {
@@ -1347,18 +1530,28 @@ function debtHistoryModal(debtId) {
   const d = state.debts.find(x => x.id === debtId);
   if (!d) return;
   const txs = [...state.transactions].filter(t => t.debtId === debtId).sort((a, b) => b.date.localeCompare(a.date) || b.createdAt - a.createdAt);
-  const rem = debtRemaining(state, debtId);
-  modal(`${esc(d.name)} · ${d.direction === 'owe' ? 'Я должен' : 'Мне должны'}`,
-    `<div class="shift-total"><span>Текущий остаток долга</span><strong>${rub(rem)}</strong><small>${d.opening ? `Начальный долг: ${rub(d.opening)} · ` : ''}${d.due ? 'Срок: ' + date(d.due) : 'Без срока'}${d.note ? ' · ' + esc(d.note) : ''}</small></div>` +
-    `<div class="actions section">${rem > 0 ? `<button type="button" class="primary small" data-dh-action="repayDebt">${d.direction === 'owe' ? 'Вернуть долг' : 'Получить возврат'}</button>` : ''}<button type="button" class="soft small" data-dh-action="increaseDebt">${d.direction === 'owe' ? 'Занять ещё' : 'Дать ещё'}</button><button type="button" class="ghost small" data-dh-action="editDebt">Настройки профиля</button></div>` +
-    `<h3 class="section">История по человеку (${txs.length})</h3>` +
+  const isInst = isInstallmentDebt(d);
+  const signed = isInst ? -debtRemaining(state, debtId) : personSignedBalance(state, debtId);
+  const rem = Math.abs(signed);
+  const dir = signed >= 0 ? 'owed' : 'owe';
+  const statusTitle = isInst ? 'Рассрочка' : (signed > 0 ? 'Мне должен' : signed < 0 ? 'Я должен' : 'В расчёте');
+
+  modal(`${esc(d.name)} · ${statusTitle}`,
+    `<div class="shift-total"><span>Текущий баланс</span><strong>${signed > 0 ? '+' : signed < 0 ? '−' : ''}${rub(rem)}</strong><small>${d.opening ? `Начальный остаток: ${rub(d.opening)} · ` : ''}${d.due ? 'Срок: ' + date(d.due) : 'Без срока'}${d.note ? ' · ' + esc(d.note) : ''}</small></div>` +
+    `<div class="actions section">` +
+      `${rem > 0 ? `<button type="button" class="primary small" data-dh-action="repayDebt">${dir === 'owe' ? 'Отдать долг' : 'Мне вернули'}</button>` : ''}` +
+      `${!isInst ? `<button type="button" class="soft small" data-dh-action="lend">Дал в долг</button><button type="button" class="soft small" data-dh-action="borrow">Взял в долг</button>` : ''}` +
+      `<button type="button" class="ghost small" data-dh-action="editDebt">Настройки</button>` +
+    `</div>` +
+    `<h3 class="section">История операций (${txs.length})</h3>` +
     `${txs.map(row).join('') || '<p class="muted">Операций пока не было.</p>'}`
   );
   dialog.querySelectorAll('[data-dh-action]').forEach(b => b.onclick = () => {
     const act = b.dataset.dhAction;
     dialog.close();
-    if (act === 'editDebt') debtModal(d);
-    else transactionModal(null, { type: act === 'repayDebt' ? (d.direction === 'owe' ? 'repay_out' : 'repay_in') : (d.direction === 'owe' ? 'borrow' : 'lend'), debtId: d.id, amount: act === 'repayDebt' ? rem : 0 });
+    if (act === 'editDebt') debtModal(d, isInst);
+    else if (act === 'lend' || act === 'borrow') transactionModal(null, { type: act, debtId: d.id });
+    else transactionModal(null, { type: dir === 'owe' ? 'repay_out' : 'repay_in', debtId: d.id, amount: rem });
   });
   dialog.querySelectorAll('[data-action="editTx"]').forEach(b => b.onclick = () => {
     const txId = b.dataset.id;
@@ -1499,11 +1692,132 @@ function startDeliveryShift() {
   const rawTax = taxInp ? taxInp.value.trim() : '';
   const taxPercent = rawTax === '' ? (state.courier.taxPercent ?? 0) : Number(rawTax);
   if (!Number.isFinite(taxPercent) || taxPercent < 0 || taxPercent > 100) throw Error('Укажи налог от 0 до 100%');
+
+  const timeInp = app.querySelector('#startShiftTimeInput');
+  let startedAt = Date.now();
+  if (timeInp && /^\d{2}:\d{2}$/.test(timeInp.value)) {
+    const [hh, mm] = timeInp.value.split(':').map(Number);
+    const d = new Date();
+    d.setHours(hh, mm, 0, 0);
+    if (d.getTime() <= Date.now() + 60000) startedAt = d.getTime();
+  }
+
+  const odoInp = app.querySelector('#startShiftOdoInput');
+  const rawOdo = odoInp ? odoInp.value.trim().replace(',', '.') : '';
+  const odoStart = rawOdo && Number(rawOdo) >= 0 ? Number(rawOdo) : (lastKnownOdometer(state) || null);
+
   mutate(s => {
     s.courier.taxPercent = taxPercent;
-    s.courierShifts.push({ id: uid(), date: today(), service: 'Доставка', startedAt: Date.now(), entries: [], earned: 0, hours: 0, orders: 0, taxPercent });
+    s.courierShifts.push({
+      id: uid(),
+      date: today(),
+      service: 'Доставка',
+      startedAt,
+      odoStart,
+      odoEnd: null,
+      fuelPer100: s.courier.fuelPer100 ?? 9.5,
+      fuelPrice: s.courier.fuelPrice ?? 5850,
+      lunchRemainingMs: 3600000,
+      lunchStartedAt: null,
+      entries: [],
+      earned: 0,
+      hours: 0,
+      orders: 0,
+      taxPercent
+    });
   });
-  toast(`Смена запущена (налог ${taxPercent}%)`);
+  quickOrders = 1;
+  quickPlusMode = false;
+  resetDrumToAverage(1);
+  toast(`Смена запущена с ${clock(startedAt)} (налог ${taxPercent}%)`);
+}
+
+function toggleLunchTimer(shiftId) {
+  const x = state.courierShifts.find(sh => sh.id === shiftId);
+  if (!x) return;
+  const now = Date.now();
+  const lunch = shiftLunchState(x, now);
+  if (lunch.active) {
+    mutate(s => {
+      const sh = s.courierShifts.find(item => item.id === shiftId);
+      sh.lunchRemainingMs = lunch.remainingMs;
+      sh.lunchStartedAt = null;
+      sh.lunchWarned5m = false;
+      sh.lunchWarnedEnd = false;
+    });
+    toast(`Снялся с обеда · в запасе осталось ${formatLunchClock(lunch.remainingMs)}`);
+  } else {
+    if (lunch.remainingMs <= 0) {
+      toast('Часовой лимит обеда на этой смене уже исчерпан');
+      return;
+    }
+    mutate(s => {
+      const sh = s.courierShifts.find(item => item.id === shiftId);
+      sh.lunchRemainingMs = lunch.remainingMs;
+      sh.lunchStartedAt = now;
+      sh.lunchWarned5m = false;
+      sh.lunchWarnedEnd = false;
+    });
+    toast(`Обед запущен · осталось ${formatLunchClock(lunch.remainingMs)}`);
+  }
+}
+
+function fuelSettingsModal() {
+  const curPer100 = state.courier.fuelPer100 ?? 9.5;
+  const curPrice = decimal(state.courier.fuelPrice ?? 5850);
+  modal('⛽ Настройки расхода и цены бензина',
+    `<p class="muted">Используются для автоматического подсчёта расходов на топливо по пробегу за смену:</p>` +
+    `<div class="formgrid section">` +
+      field('Расход авто, л на 100 км', input('fuelPer100', curPer100, 'text', 'inputmode="decimal" data-no-math="true" required placeholder="Например: 9.5"')) +
+      field('Цена 1 литра бензина, ₽', input('fuelPrice', curPrice, 'text', 'inputmode="decimal" data-no-math="true" required placeholder="Например: 58.50"')) +
+    `</div>`,
+    f => mutate(s => {
+      const per100 = Number(String(f.get('fuelPer100') || '0').replace(',', '.'));
+      const priceCents = cents(f.get('fuelPrice'));
+      if (!Number.isFinite(per100) || per100 < 0 || per100 > 60) throw Error('Укажи расход от 0 до 60 л/100 км');
+      s.courier.fuelPer100 = per100;
+      s.courier.fuelPrice = priceCents;
+      for (const sh of s.courierShifts) {
+        if (sh.startedAt && !sh.endedAt) {
+          sh.fuelPer100 = per100;
+          sh.fuelPrice = priceCents;
+        }
+      }
+    })
+  );
+}
+
+function shiftOdoModal(shiftId) {
+  const x = state.courierShifts.find(sh => sh.id === shiftId);
+  if (!x) return;
+  const fStats = shiftFuelStats(state, x);
+  modal('⛽ Пробег смены',
+    `<div class="formgrid">` +
+      field('Пробег на начало смены, км', input('odoStart', x.odoStart ?? '', 'text', 'inputmode="decimal" data-no-math="true" placeholder="Например: 154200"')) +
+      field('Пробег на конец (или сейчас), км', input('odoEnd', x.odoEnd ?? '', 'text', 'inputmode="decimal" data-no-math="true" placeholder="Например: 154295"')) +
+      field('Расход, л/100 км', input('fuelPer100', x.fuelPer100 ?? state.courier.fuelPer100 ?? 9.5, 'text', 'inputmode="decimal" data-no-math="true" required')) +
+      field('Цена бензина, ₽/л', input('fuelPrice', decimal(x.fuelPrice ?? state.courier.fuelPrice ?? 5850), 'text', 'inputmode="decimal" data-no-math="true" required')) +
+    `</div>` +
+    `<div class="note section" id="odoLivePreview">` +
+      (fStats.km > 0 ? `Пройдено: <b>${fStats.km} км</b> · Израсходовано: <b>${fStats.liters} л</b> · Стоимость бензина: <b>−${rub(fStats.cost)}</b>` : 'Укажи пробег на старт и конец, чтобы рассчитать бензин.') +
+    `</div>`,
+    f => mutate(s => {
+      const sh = s.courierShifts.find(item => item.id === shiftId);
+      const rawStart = String(f.get('odoStart') || '').trim().replace(',', '.');
+      const rawEnd = String(f.get('odoEnd') || '').trim().replace(',', '.');
+      const per100 = Number(String(f.get('fuelPer100') || '0').replace(',', '.'));
+      const priceCents = cents(f.get('fuelPrice'));
+      sh.odoStart = rawStart !== '' ? Number(rawStart) : null;
+      sh.odoEnd = rawEnd !== '' ? Number(rawEnd) : null;
+      if (sh.odoStart !== null && sh.odoEnd !== null && sh.odoEnd < sh.odoStart) {
+        throw Error('Конечный пробег не может быть меньше начального');
+      }
+      sh.fuelPer100 = per100;
+      sh.fuelPrice = priceCents;
+      s.courier.fuelPer100 = per100;
+      s.courier.fuelPrice = priceCents;
+    })
+  );
 }
 
 function quickAddDelivery(shiftId, forceNoAmount = false) {
@@ -1524,6 +1838,7 @@ function quickAddDelivery(shiftId, forceNoAmount = false) {
   });
   quickOrders = 1;
   quickPlusMode = false;
+  resetDrumToAverage(1);
   toast(`Поездка (#${(x.entries?.length || 0) + 1}, выдач: ${orders})${amount ? ' на ' + rub(amount) : ' без суммы'} записана`);
 }
 
@@ -1638,24 +1953,54 @@ function tipModal(id) {
 
 function shiftDetailsModal(id, finish = false) {
   const x = state.courierShifts.find(sh => sh.id === id), t = shiftTotals(state, x), exp = shiftExpensesTotal(x);
+  const cleanTotal = t.net - exp - (t.fuelCost || 0);
   modal(finish ? 'Завершить смену' : 'Итог смены · ' + date(x.date),
-    `<div class="shift-total"><span>Чистыми за смену (с чаем, минус налог и расход)</span><strong>${rub(t.net - exp)}</strong></div>` +
+    `<div class="shift-total"><span>Чистыми за смену (после налога, бензина и расходов)</span><strong id="finishCleanTotal">${rub(cleanTotal)}</strong></div>` +
     `<div class="row"><span>Поездки (${t.trips ?? 0} шт. / ${t.orders} выдач)</span><b>${rub(t.earned)}</b></div>` +
     `<div class="row"><span>Чаевые</span><b>${rub(t.tips)}</b></div>` +
     `<div class="row"><span>Налог смены (${x.taxPercent ?? 0}%)</span><b>−${rub(t.tax)}</b></div>` +
-    `${exp ? `<div class="row"><span>Расходы на смене</span><b>−${rub(exp)}</b></div>` : ''}` +
+    `<div class="row" id="finishFuelRow"><span>Бензин (${t.fuelKm || 0} км · ${t.fuelLiters || 0} л)</span><b>−${rub(t.fuelCost || 0)}</b></div>` +
+    `${exp ? `<div class="row"><span>Прочие расходы на смене</span><b>−${rub(exp)}</b></div>` : ''}` +
     `<div class="formgrid section">` +
-      `<label class="field"><span>Начало</span><input id="shiftStart" type="datetime-local" value="${localDatetime(x.startedAt)}" required></label>` +
+      `<label class="field"><span>Пробег на начало, км</span><input id="shiftOdoStart" type="text" inputmode="decimal" data-no-math="true" value="${esc(x.odoStart ?? '')}" placeholder="Например: 154200"></label>` +
+      `<label class="field"><span>Пробег на конец смены, км</span><input id="shiftOdoEnd" type="text" inputmode="decimal" data-no-math="true" value="${esc(x.odoEnd ?? '')}" placeholder="Например: 154295"></label>` +
+      `<label class="field"><span>Начало смены</span><input id="shiftStart" type="datetime-local" value="${localDatetime(x.startedAt)}" required></label>` +
       `${!finish ? `<label class="field"><span>Завершение</span><input id="shiftEnd" type="datetime-local" value="${localDatetime(x.endedAt)}" required></label>` : ''}` +
     `</div>`,
     () => mutate(s => {
       const shift = s.courierShifts.find(sh => sh.id === id);
+      const rawStart = dialog.querySelector('#shiftOdoStart').value.trim().replace(',', '.');
+      const rawEnd = dialog.querySelector('#shiftOdoEnd').value.trim().replace(',', '.');
+      shift.odoStart = rawStart !== '' ? Number(rawStart) : null;
+      shift.odoEnd = rawEnd !== '' ? Number(rawEnd) : null;
+      if (shift.odoStart !== null && shift.odoEnd !== null && shift.odoEnd < shift.odoStart) {
+        throw Error('Пробег на конец смены не может быть меньше начального');
+      }
+      shift.fuelPer100 ??= s.courier.fuelPer100 ?? 9.5;
+      shift.fuelPrice ??= s.courier.fuelPrice ?? 5850;
+      if ( shift.lunchStartedAt ) {
+        const lState = shiftLunchState(shift);
+        shift.lunchRemainingMs = lState.remainingMs;
+        shift.lunchStartedAt = null;
+      }
       shift.startedAt = new Date(dialog.querySelector('#shiftStart').value).getTime();
       shift.date = localDatetime(shift.startedAt).slice(0, 10);
       shift.endedAt = finish ? Date.now() : new Date(dialog.querySelector('#shiftEnd').value).getTime();
       syncShift(shift);
     })
   );
+  const recalcFinishPreview = () => {
+    const sVal = Number(dialog.querySelector('#shiftOdoStart').value.trim().replace(',', '.')) || 0;
+    const eVal = Number(dialog.querySelector('#shiftOdoEnd').value.trim().replace(',', '.')) || 0;
+    const tempShift = { ...x, odoStart: sVal, odoEnd: eVal };
+    const f = shiftFuelStats(state, tempShift);
+    const fuelRow = dialog.querySelector('#finishFuelRow');
+    const cleanEl = dialog.querySelector('#finishCleanTotal');
+    if (fuelRow) fuelRow.innerHTML = `<span>Бензин (${f.km} км · ${f.liters} л)</span><b>−${rub(f.cost)}</b>`;
+    if (cleanEl) cleanEl.textContent = rub(t.net - exp - f.cost);
+  };
+  dialog.querySelector('#shiftOdoStart').addEventListener('input', recalcFinishPreview);
+  dialog.querySelector('#shiftOdoEnd').addEventListener('input', recalcFinishPreview);
 }
 
 function shiftManualModal(x) {
@@ -1904,7 +2249,8 @@ function thumbSheetModal() {
     `<div class="thumb-sheet-grid">` +
       `<button type="button" class="thumb-card-btn thumb-tone-exp" data-thumb-tx="expense"><span class="thumb-card-ico">💸</span><span class="thumb-card-txt"><b>Расход</b><small>Покупка или сплит</small></span></button>` +
       `<button type="button" class="thumb-card-btn thumb-tone-inc" data-thumb-tx="income"><span class="thumb-card-ico">💰</span><span class="thumb-card-txt"><b>Доход</b><small>Поступление</small></span></button>` +
-      `<button type="button" class="thumb-card-btn thumb-tone-debt" data-thumb-tx="lend"><span class="thumb-card-ico">🤝</span><span class="thumb-card-txt"><b>Дал в долг</b><small>Новому / знакомому</small></span></button>` +
+      `<button type="button" class="thumb-card-btn thumb-tone-debt" data-thumb-tx="lend"><span class="thumb-card-ico">🤝</span><span class="thumb-card-txt"><b>Дал / занял</b><small>Новому / знакомому</small></span></button>` +
+      `<button type="button" class="thumb-card-btn thumb-tone-inc" data-thumb-tx="repay_in"><span class="thumb-card-ico">↩️</span><span class="thumb-card-txt"><b>Вернули долг</b><small>Оформить возврат</small></span></button>` +
       `<button type="button" class="thumb-card-btn thumb-tone-trf" data-thumb-tx="transfer"><span class="thumb-card-ico">⇄</span><span class="thumb-card-txt"><b>Перевод</b><small>Между счетами</small></span></button>` +
     `</div>` +
     `<div class="thumb-sheet-section"><div class="thumb-section-header">🛵 Доставка в 1 касание</div><div class="actions">` +
@@ -2027,7 +2373,7 @@ async function sendImmediateNotification(title, body, idNum = 9001) {
 async function triggerTestNotification() {
   const dueList = duePaymentNotifications(state);
   const sample = dueList[0] || {
-    title: '🔔 Проверка уведомлений Финансист 3.1',
+    title: '🔔 Проверка уведомлений Финансист 3.2',
     body: 'Уведомления работают! Приложение напомнит за 1 день до платежа, в день оплаты и при просрочке.'
   };
   const ok = await sendImmediateNotification(sample.title, sample.body, Math.floor(Date.now() % 100000));
@@ -2170,9 +2516,9 @@ function render() {
     : '';
 
   app.innerHTML = `<div class="shell">` +
-    `<aside class="sidebar"><div class="brand"><span class="brandmark">₽</span>Финансист</div><nav class="nav">${nav}</nav><div class="sidebar-note"><span class="statusdot"></span>Локальная база + IndexedDB<br><span class="version">Финансист 3.1 · Android 2026</span></div></aside>` +
+    `<aside class="sidebar"><div class="brand"><span class="brandmark">₽</span>Финансист</div><nav class="nav">${nav}</nav><div class="sidebar-note"><span class="statusdot"></span>Локальная база + IndexedDB<br><span class="version">Финансист 3.2 · Android 2026</span></div></aside>` +
     `<main class="main">` +
-      `<div class="mobile-brand"><span class="actions"><span class="brandmark">₽</span>Финансист</span><span class="pill ${activeShifts.length ? 'essential' : ''}">${activeShifts.length ? '🟢 В смене' : '3.1'}</span></div>` +
+      `<div class="mobile-brand"><span class="actions"><span class="brandmark">₽</span>Финансист</span><span class="pill ${activeShifts.length ? 'essential' : ''}">${activeShifts.length ? '🟢 В смене' : '3.2'}</span></div>` +
       `<div class="topline"><div><h1>${viewTitles[view] || 'Обзор'}</h1></div>${topRightHtml}</div>` +
       `${storageError ? `<div class="note negative">${esc(storageError)}</div>` : ''}` +
       `${content}` +
@@ -2220,35 +2566,139 @@ setTimeout(() => { checkStartupPaymentAlerts(); syncNativeNotifications(false); 
     app.querySelectorAll('[data-start-tax-preset]').forEach(btnEl => btnEl.className = 'small ' + (btnEl === b ? 'primary' : 'ghost'));
   });
 
+  const syncDrumDom = (shiftId, updateInput = true) => {
+    const rubValEl = app.querySelector(`[data-drum-rub-val="${shiftId}"]`);
+    const kopValEl = app.querySelector(`[data-drum-kop-val="${shiftId}"]`);
+    const rubSlider = app.querySelector(`[data-drum-rub-slider="${shiftId}"]`);
+    const kopSlider = app.querySelector(`[data-drum-kop-slider="${shiftId}"]`);
+    if (rubValEl) {
+      rubValEl.textContent = String(drumRubles);
+      const wheel = rubValEl.parentElement;
+      const neighbors = wheel.querySelectorAll('.drum-step-Neighbor');
+      if (neighbors[0]) neighbors[0].textContent = String(Math.max(0, drumRubles - 1));
+      if (neighbors[1]) neighbors[1].textContent = String(drumRubles + 1);
+    }
+    if (kopValEl) {
+      kopValEl.textContent = String(drumKopeks).padStart(2, '0');
+      const wheel = kopValEl.parentElement;
+      const neighbors = wheel.querySelectorAll('.drum-step-Neighbor');
+      if (neighbors[0]) neighbors[0].textContent = String((drumKopeks + 99) % 100).padStart(2, '0');
+      if (neighbors[1]) neighbors[1].textContent = String((drumKopeks + 1) % 100).padStart(2, '0');
+    }
+    if (rubSlider) {
+      if (drumRubles < Number(rubSlider.min)) rubSlider.min = String(Math.max(0, drumRubles - 30));
+      if (drumRubles > Number(rubSlider.max)) rubSlider.max = String(drumRubles + 60);
+      rubSlider.value = String(drumRubles);
+    }
+    if (kopSlider) kopSlider.value = String(drumKopeks);
+    if (updateInput) {
+      const inp = app.querySelector(`[data-quick-amount="${shiftId}"]`);
+      if (inp) inp.value = formatDrumString(drumRubles, drumKopeks);
+    }
+  };
+
   app.querySelectorAll('[data-quick-order]').forEach(b => b.onclick = () => {
     const val = b.dataset.quickOrder;
     const shiftId = b.dataset.shift;
     const customInp = app.querySelector(`#customQuickOrders_${shiftId}`);
-    if (val === '3+') {
+    if (val === '4+' || val === '3+') {
       quickPlusMode = true;
-      quickOrders = Number(customInp?.value) || 3;
+      quickOrders = Number(customInp?.value) || 4;
       if (customInp) { customInp.hidden = false; customInp.focus(); customInp.select(); }
     } else {
       quickPlusMode = false;
       quickOrders = Number(val);
       if (customInp) customInp.hidden = true;
     }
-    app.querySelectorAll(`[data-quick-order][data-shift="${shiftId}"]`).forEach(btnEl => {
-      btnEl.className = (btnEl === b ? 'primary' : 'ghost');
-    });
+    resetDrumToAverage(quickOrders);
+    render();
   });
 
-  app.querySelectorAll('[data-preset-amount]').forEach(b => b.onclick = () => {
-    const inp = app.querySelector(`[data-quick-amount="${b.dataset.shift}"]`);
-    if (inp) { inp.value = b.dataset.presetAmount; inp.focus(); }
+  app.querySelectorAll('.custom-orders-inp').forEach(inp => {
+    inp.oninput = () => {
+      const v = Math.max(1, Number(inp.value) || 4);
+      quickOrders = v;
+      resetDrumToAverage(v);
+      const shiftId = inp.id.replace('customQuickOrders_', '');
+      syncDrumDom(shiftId, true);
+    };
   });
 
-  app.querySelectorAll('[data-preset-plus]').forEach(b => b.onclick = () => {
-    const inp = app.querySelector(`[data-quick-amount="${b.dataset.shift}"]`);
-    if (inp) {
-      const cur = Number(String(inp.value || '0').replace(',', '.')) || 0;
-      inp.value = String(cur + Number(b.dataset.presetPlus));
+  app.querySelectorAll('[data-drum-step]').forEach(b => b.onclick = () => {
+    const [kind, deltaStr] = b.dataset.drumStep.split('|');
+    const delta = Number(deltaStr);
+    const shiftId = b.dataset.shift;
+    drumTouched = true;
+    if (kind === 'rub') {
+      drumRubles = Math.max(0, drumRubles + delta);
+    } else {
+      let nextK = drumKopeks + delta;
+      while (nextK < 0) {
+        if (drumRubles > 0) { drumRubles--; nextK += 100; } else { nextK = 0; break; }
+      }
+      while (nextK >= 100) {
+        drumRubles++; nextK -= 100;
+      }
+      drumKopeks = nextK;
     }
+    syncDrumDom(shiftId, true);
+  });
+
+  app.querySelectorAll('[data-drum-rub-slider]').forEach(sl => {
+    sl.oninput = () => {
+      drumTouched = true;
+      drumRubles = Math.max(0, Number(sl.value) || 0);
+      syncDrumDom(sl.dataset.drumRubSlider, true);
+    };
+  });
+
+  app.querySelectorAll('[data-drum-kop-slider]').forEach(sl => {
+    sl.oninput = () => {
+      drumTouched = true;
+      drumKopeks = Math.max(0, Math.min(99, Number(sl.value) || 0));
+      syncDrumDom(sl.dataset.drumKopSlider, true);
+    };
+  });
+
+  app.querySelectorAll('.alarm-drum-wheel').forEach(wheel => {
+    let startY = null;
+    const kind = wheel.dataset.wheelKind;
+    const shiftId = wheel.dataset.shift;
+    const stepBy = (d) => {
+      drumTouched = true;
+      if (kind === 'rub') drumRubles = Math.max(0, drumRubles + d);
+      else drumKopeks = (drumKopeks + d + 100) % 100;
+      syncDrumDom(shiftId, true);
+    };
+    wheel.addEventListener('wheel', e => {
+      e.preventDefault();
+      stepBy(e.deltaY > 0 ? 1 : -1);
+    }, { passive: false });
+    wheel.addEventListener('touchstart', e => {
+      if (e.touches.length === 1) startY = e.touches[0].clientY;
+    }, { passive: true });
+    wheel.addEventListener('touchmove', e => {
+      if (startY === null || e.touches.length !== 1) return;
+      const dy = startY - e.touches[0].clientY;
+      if (Math.abs(dy) >= 14) {
+        const steps = Math.trunc(dy / 14);
+        stepBy(steps);
+        startY = e.touches[0].clientY;
+      }
+    }, { passive: true });
+    wheel.addEventListener('touchend', () => { startY = null; });
+  });
+
+  app.querySelectorAll('[data-quick-amount]').forEach(inp => {
+    inp.addEventListener('input', () => {
+      drumTouched = true;
+      const clean = String(inp.value || '').replace(',', '.');
+      const [rPart, kPart] = clean.split('.');
+      if (/^\d+$/.test(rPart || '')) drumRubles = Number(rPart);
+      if (kPart !== undefined && /^\d{1,2}$/.test(kPart)) drumKopeks = Number(kPart.padEnd(2, '0'));
+      else if (kPart === undefined) drumKopeks = 0;
+      syncDrumDom(inp.dataset.quickAmount, false);
+    });
   });
 
   app.querySelectorAll('[data-quick-amount]').forEach(inp => {
@@ -2306,12 +2756,23 @@ function action(name, id) {
     case 'openCategory': openRootCat = id; render(); return;
     case 'categoryBack': openRootCat = null; render(); return;
     case 'addDebt':
-    case 'editDebt': return debtModal(state.debts.find(d => d.id === id));
+    case 'editDebt': return debtModal(state.debts.find(d => d.id === id), false);
+    case 'addInstallment':
+    case 'editInstallment': return debtModal(state.debts.find(d => d.id === id), true);
     case 'debtHistory': return debtHistoryModal(id);
+    case 'lendPerson': return transactionModal(null, { type: 'lend', debtId: id });
+    case 'borrowPerson': return transactionModal(null, { type: 'borrow', debtId: id });
     case 'repayDebt':
     case 'increaseDebt': {
       const d = state.debts.find(x => x.id === id);
-      if (d) transactionModal(null, { type: name === 'repayDebt' ? (d.direction === 'owe' ? 'repay_out' : 'repay_in') : (d.direction === 'owe' ? 'borrow' : 'lend'), debtId: id, amount: name === 'repayDebt' ? debtRemaining(state, id) : 0 });
+      if (!d) return;
+      const dir = personDirection(state, id);
+      const rem = debtRemaining(state, id);
+      transactionModal(null, {
+        type: name === 'repayDebt' ? (dir === 'owe' ? 'repay_out' : 'repay_in') : (dir === 'owe' ? 'borrow' : 'lend'),
+        debtId: id,
+        amount: name === 'repayDebt' ? rem : 0
+      });
       return;
     }
     case 'payInstallment': {
@@ -2367,6 +2828,9 @@ function action(name, id) {
     case 'startDeliveryShift':
     case 'startShift': return startDeliveryShift();
     case 'editShiftTax': return editShiftTaxModal(id);
+    case 'toggleLunch': return toggleLunchTimer(id);
+    case 'fuelSettings': return fuelSettingsModal();
+    case 'shiftOdoModal': return shiftOdoModal(id);
     case 'shiftExpense': return shiftExpenseModal(id);
     case 'quickAddDelivery': return quickAddDelivery(id, false);
     case 'quickAddNoAmount': return quickAddDelivery(id, true);
@@ -2501,7 +2965,7 @@ function enhanceMathInputs(root = document) {
       ['+', '−', '×', '÷', '='].map(op => `<button type="button" tabindex="-1" data-math-op="${op}">${op}</button>`).join('') +
       `<span class="math-live-preview" data-math-preview></span>`;
 
-    if (el.parentElement && !el.parentElement.querySelector('.inline-math-bar')) {
+    if (!el.dataset.noMath && !el.dataset.noMathBar && el.parentElement && !el.parentElement.querySelector('.inline-math-bar')) {
       el.after(bar);
     }
 
@@ -2586,3 +3050,36 @@ if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js', { 
 
 render();
 setTimeout(() => { checkStartupPaymentAlerts(); syncNativeNotifications(false); }, 600);
+
+
+// Live 1-second ticker for active shift elapsed time and 60-min lunch countdown
+setInterval(() => {
+  const activeShifts = state.courierShifts.filter(x => x.startedAt && !x.endedAt);
+  if (!activeShifts.length) return;
+  const now = Date.now();
+  for (const x of activeShifts) {
+    document.querySelectorAll(`[data-live-shift-elapsed="${x.id}"]`).forEach(el => {
+      el.textContent = '⏱ ' + formatShiftElapsed(x, now);
+    });
+    const lunch = shiftLunchState(x, now);
+    document.querySelectorAll(`[data-live-lunch-timer="${x.id}"]`).forEach(el => {
+      el.textContent = (el.classList.contains('lunch-clock') ? '' : '🍱 ') + formatLunchClock(lunch.remainingMs);
+    });
+    if (lunch.active) {
+      if (lunch.remainingMs <= 300000 && lunch.remainingMs > 290000 && !x.lunchWarned5m) {
+        x.lunchWarned5m = true;
+        sendImmediateNotification('🍱 До конца обеда 5 минут', 'Осталось 5 минут обеденного перерыва на смене.', 7705);
+        toast('🍱 До конца обеда осталось 5 минут!');
+      }
+      if (lunch.remainingMs <= 0 && !x.lunchWarnedEnd) {
+        x.lunchWarnedEnd = true;
+        x.lunchRemainingMs = 0;
+        x.lunchStartedAt = null;
+        try { localStorage.setItem(KEY, JSON.stringify(state)); } catch {}
+        sendImmediateNotification('🔔 Обед закончился!', 'Часовой таймер обеда истёк — пора выходить на линию.', 7706);
+        toast('🔔 Таймер обеда (60 мин) закончился!');
+        render();
+      }
+    }
+  }
+}, 1000);

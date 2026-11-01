@@ -1,4 +1,4 @@
-const CACHE_NAME = 'financier-v3.1-android2026';
+const CACHE_NAME = 'financier-v3.2-android2026';
 const ASSETS = [
   './',
   './index.html',
