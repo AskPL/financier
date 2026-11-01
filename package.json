@@ -1,9 +1,9 @@
 {
   "name": "financier-personal-apk",
-  "version": "3.2.0",
+  "version": "3.4.0",
   "private": true,
   "type": "module",
-  "description": "Финансист 3.2 — Личный финансовый центр (PWA + Android APK)",
+  "description": "Финансист 3.4 — Личный финансовый центр (PWA + Android APK)",
   "scripts": {
     "prepare:www": "node prepare-www.mjs",
     "cap:init": "npx cap add android",

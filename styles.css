@@ -2155,3 +2155,648 @@ dialog#dialog::backdrop {
 .debt-line .row-main {
   min-width: 170px;
 }
+
+
+/* ==========================================================================
+   Финансист 3.3 — Вкладка «Работа», Сворачиваемая Курьерка,
+   Модуль «Ремонт техники», Мульти-номера и Печатные PDF-акты с офертой
+   ========================================================================== */
+
+/* Сворачиваемый аккордеон курьерки во вкладке «Работа» */
+.work-accordion {
+  background: var(--surface);
+  border: 1.5px solid var(--border-strong);
+  border-radius: var(--r-lg);
+  padding: 16px 18px;
+  box-shadow: var(--shadow-sm);
+}
+
+.work-accordion-active {
+  border-color: var(--positive-border);
+  background: linear-gradient(160deg, var(--surface) 0%, var(--positive-bg) 140%);
+}
+
+.work-accordion-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.work-accordion-summary::-webkit-details-marker {
+  display: none;
+}
+
+.work-acc-title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.work-acc-title h2 {
+  font-size: 17px;
+  font-weight: 800;
+  letter-spacing: -0.015em;
+}
+
+.work-accordion-body {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.repair-badge {
+  background: linear-gradient(135deg, #2563EB 0%, #4F46E5 100%);
+}
+
+/* Спойлер для истории смен и расчёток (показывает только 1 последнюю запись) */
+.history-spoiler {
+  margin-top: 8px;
+  padding: 10px 14px;
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+  border: 1px dashed var(--border-strong);
+}
+
+.history-spoiler summary {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--accent);
+}
+
+.spoiler-items {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* Карточки ремонта техники и клиентов */
+.repair-list-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.repair-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 15px 16px;
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+}
+
+.repair-card.repair-archived {
+  opacity: 0.88;
+  border-style: dashed;
+}
+
+.repair-card-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.repair-card-main {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.repair-card-price {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+}
+
+.repair-card-details {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 13.5px;
+  padding: 10px 12px;
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  border: 1px solid var(--border);
+}
+
+.repair-badges-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.repair-card-actions {
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+}
+
+/* Панель нескольких телефонов клиента и кнопка вызова в 1 клик */
+.client-phones-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 8px 10px;
+  border-radius: var(--r-sm);
+  background: var(--surface-tonal);
+  border: 1px solid var(--border);
+}
+
+.phone-chips-wrap {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.phone-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 32px !important;
+  padding: 4px 10px !important;
+  border-radius: var(--r-pill) !important;
+  background: var(--surface) !important;
+  border: 1px solid var(--border-strong) !important;
+  font-size: 12.5px !important;
+  font-weight: 700 !important;
+  color: var(--text-soft) !important;
+}
+
+.phone-chip.active {
+  background: var(--accent-container) !important;
+  color: var(--on-accent-container) !important;
+  border-color: var(--accent) !important;
+}
+
+.call-dial-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 34px;
+  padding: 6px 14px;
+  border-radius: var(--r-pill);
+  background: var(--positive);
+  color: #FFFFFF !important;
+  font-weight: 800;
+  font-size: 13px;
+  text-decoration: none;
+  box-shadow: 0 4px 12px rgba(16, 185, 129, 0.35);
+}
+
+.phone-edit-row {
+  display: grid;
+  grid-template-columns: 36px 1.2fr 1fr auto auto;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.phone-active-radio {
+  display: inline-grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  background: var(--surface-tonal);
+  cursor: pointer;
+  font-size: 16px;
+}
+
+.phone-active-radio input {
+  display: none;
+}
+
+.phone-active-radio:has(input:checked) {
+  background: var(--accent);
+  color: #FFFFFF;
+}
+
+.sub-box {
+  padding: 14px;
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+}
+
+.sub-box h3 {
+  font-size: 14px;
+  font-weight: 800;
+  margin-bottom: 4px;
+}
+
+/* Предпросмотр и печать А4 PDF-актов (приёмка и выдача с гарантией) */
+.pdf-preview-container {
+  max-height: 62dvh;
+  overflow-y: auto;
+  padding: 10px;
+  border-radius: var(--r-md);
+  background: #E2E8F0;
+  border: 1px solid var(--border-strong);
+}
+
+.pdf-act-sheet {
+  background: #FFFFFF;
+  color: #0F172A;
+  padding: 22px 24px;
+  border-radius: 8px;
+  font-size: 13px;
+  line-height: 1.45;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+}
+
+.pdf-act-header h2 {
+  font-size: 16px;
+  font-weight: 800;
+  color: #0F172A;
+  margin-bottom: 4px;
+}
+
+.pdf-act-sub {
+  font-size: 12px;
+  color: #475569;
+  margin-bottom: 12px;
+}
+
+.pdf-sec-title {
+  margin: 14px 0 6px;
+  font-size: 13.5px;
+  font-weight: 800;
+  color: #0F172A;
+}
+
+.pdf-act-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 10px 0;
+}
+
+.pdf-act-table th,
+.pdf-act-table td {
+  border: 1px solid #94A3B8;
+  padding: 7px 10px;
+  text-align: left;
+  font-size: 12.5px;
+  color: #0F172A;
+}
+
+.pdf-act-table th {
+  background: #F1F5F9;
+  font-weight: 700;
+}
+
+.pdf-total-row td {
+  background: #F8FAFC;
+  font-size: 13.5px;
+}
+
+.pdf-offer-box {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid #CBD5E1;
+  border-radius: 6px;
+  background: #F8FAFC;
+  font-size: 11.5px;
+  color: #334155;
+}
+
+.pdf-offer-box h4 {
+  margin: 0 0 4px;
+  font-size: 12px;
+  color: #0F172A;
+}
+
+.pdf-offer-box p {
+  margin: 2px 0;
+}
+
+.pdf-signatures {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+  margin-top: 22px;
+  padding-top: 10px;
+}
+
+.pdf-sig-col {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+}
+
+.pdf-sig-line {
+  border-bottom: 1px solid #0F172A;
+  padding: 18px 0 4px;
+  font-weight: 700;
+}
+
+#dedicatedPrintRoot {
+  display: none;
+}
+
+@media print {
+  body > *:not(#dedicatedPrintRoot) {
+    display: none !important;
+  }
+  #dedicatedPrintRoot {
+    display: block !important;
+    width: 100%;
+  }
+  .pdf-act-sheet {
+    box-shadow: none;
+    padding: 0;
+  }
+}
+
+@media (max-width: 640px) {
+  .phone-edit-row {
+    grid-template-columns: 36px 1fr auto;
+  }
+  .phone-edit-row input[data-ph-label] {
+    grid-column: 1 / -1;
+  }
+  .pdf-signatures {
+    grid-template-columns: 1fr;
+  }
+}
+
+
+/* ==========================================================================
+   Финансист 3.4 — Полноэкранная подпись с ✕, Графический ключ 3×3,
+   Пагинация по 30 операций, Упрощённые долги (+ / −) и 3-модульная база
+   ========================================================================== */
+
+/* 1. Пагинация списка операций по 30 записей (.tx-pager) */
+.tx-pager {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+}
+
+.tx-pager button:disabled {
+  opacity: 0.4;
+  pointer-events: none;
+}
+
+.tx-pager-info {
+  font-size: 13px;
+  text-align: center;
+}
+
+/* 2. Простой переключатель долгов «+ Плюс / − Минус» */
+.debt-sign-box {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  margin-bottom: 10px;
+}
+
+.debt-sign-tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.debt-sign-btn {
+  min-height: 44px;
+  padding: 8px 12px;
+  border-radius: var(--r-md);
+  font-weight: 800;
+  font-size: 13.5px;
+  text-align: center;
+}
+
+.debt-sign-btn.sign-plus-active {
+  background: var(--positive);
+  color: #FFFFFF;
+  box-shadow: 0 6px 16px rgba(16, 185, 129, 0.35);
+}
+
+.debt-sign-btn.sign-minus-active {
+  background: var(--danger);
+  color: #FFFFFF;
+  box-shadow: 0 6px 16px rgba(244, 63, 94, 0.35);
+}
+
+.debt-submode-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* 3. Визуализатор графического ключа 3×3 (9 точек) */
+.pattern-lock-box {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 12px;
+  border-radius: var(--r-md);
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+}
+
+.pattern-lock-header {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 13px;
+}
+
+.pattern-grid-wrap {
+  position: relative;
+  width: 180px;
+  height: 180px;
+  border-radius: 18px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  user-select: none;
+}
+
+.pattern-svg-overlay {
+  position: absolute;
+  inset: 0;
+  width: 180px;
+  height: 180px;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.pattern-dots-grid {
+  position: relative;
+  z-index: 2;
+  width: 180px;
+  height: 180px;
+  display: grid;
+  grid-template-columns: repeat(3, 60px);
+  grid-template-rows: repeat(3, 60px);
+  place-items: center;
+}
+
+.pattern-dot {
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  background: var(--surface-tonal);
+  border: 2px solid var(--border-strong);
+  display: inline-grid;
+  place-items: center;
+  font-weight: 800;
+  font-size: 13px;
+  color: var(--muted);
+  transition: transform 0.12s ease, background 0.15s ease, border-color 0.15s ease;
+}
+
+.pattern-dot.active {
+  background: var(--accent);
+  border-color: #34D399;
+  color: #FFFFFF;
+  transform: scale(1.12);
+  box-shadow: 0 0 0 4px var(--accent-soft);
+}
+
+/* 4. Полноэкранное окно ручной подписи клиента с крестиком ✕ */
+.fullscreen-sig-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  background: #0B0F17;
+  display: flex;
+  flex-direction: column;
+}
+
+.sig-pad-shell {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100dvh;
+  padding: 14px 16px calc(16px + env(safe-area-inset-bottom, 0px));
+  gap: 12px;
+}
+
+.sig-pad-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 12px 16px;
+  border-radius: var(--r-md);
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+}
+
+.sig-pad-topbar h3 {
+  font-size: 16px;
+  font-weight: 800;
+  margin-bottom: 2px;
+}
+
+.sig-pad-topbar small {
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+.sig-canvas-stage {
+  position: relative;
+  flex: 1;
+  min-height: 260px;
+  border-radius: 22px;
+  background: #FFFFFF;
+  border: 2px solid var(--accent);
+  overflow: hidden;
+  touch-action: none;
+  user-select: none;
+}
+
+#sigFullscreenCanvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  cursor: crosshair;
+  touch-action: none;
+}
+
+.sig-guide-line {
+  position: absolute;
+  left: 28px;
+  right: 28px;
+  bottom: 24%;
+  border-bottom: 2px dashed #64748B;
+  padding-bottom: 8px;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  pointer-events: none;
+}
+
+.sig-cross-mark {
+  font-size: 36px;
+  font-weight: 900;
+  color: #E11D48;
+  line-height: 1;
+}
+
+.sig-guide-caption {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: #64748B;
+}
+
+/* Встроенная подпись в PDF-акте */
+.pdf-sig-client-box {
+  position: relative;
+  min-height: 54px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 0 4px !important;
+}
+
+.pdf-sig-cross {
+  font-size: 18px;
+  font-weight: 900;
+  color: #E11D48;
+}
+
+.pdf-sig-img {
+  max-height: 52px;
+  max-width: 220px;
+  object-fit: contain;
+}
+
+.pdf-sig-placeholder {
+  font-size: 11.5px;
+  color: #94A3B8;
+  font-weight: 600;
+}

@@ -7,7 +7,11 @@ import {
   statementRemaining, shiftTotals, syncShift, incomeBreakdown, monthBudget, syncRecurring,
   calendarMoney, forecastMoney, monthlyMoney, planFromExpense, validateTransaction, validateState,
   duePaymentNotifications, isInstallmentDebt, personSignedBalance, personDirection,
-  shiftFuelStats, lastKnownOdometer, shiftLunchState, averageOrderAmountCents
+  shiftFuelStats, lastKnownOdometer, shiftLunchState, averageOrderAmountCents,
+  REPAIR_STATUSES, POSTPONE_REASONS, getClientActivePhone, normalizePhoneHref, repairDeviceTotals,
+  DEVICE_CONDITIONS, DEVICE_ACCESSORIES, DEVICE_AUTH_TYPES,
+  formatDeviceConditionSummary, formatDeviceAccessoriesSummary,
+  exportModulePayload, mergeModulePayload
 } from './core.js';
 
 const KEY = 'financier.personal.v1';
@@ -27,6 +31,8 @@ let period = { from: today().slice(0, 7) + '-01', to: today() };
 let installEvent = null;
 let quickOrders = 1, quickPlusMode = false;
 let drumRubles = 215, drumKopeks = 0, drumTouched = false;
+let deliveryForceOpen = false, repairTab = 'active', repairSearch = '', activePrintHtml = '', txPage = 1;
+const TX_PAGE_SIZE = 30;
 let catKind = 'expense', openRootCat = null, budgetIncomeMode = 'all', purchasesTab = 'upcoming';
 let calAnchor = today(), calSpan = 'week', calMode = 'received', monthCursor = today().slice(0, 7);
 
@@ -59,6 +65,14 @@ const formatDrumString = (r = drumRubles, k = drumKopeks) => {
   const kopClean = Math.max(0, Math.min(99, Math.round(Number(k) || 0)));
   return kopClean > 0 ? `${rubClean}.${String(kopClean).padStart(2, '0')}` : `${rubClean}`;
 };
+
+
+function singleLatestList(rowsHtmlArray, emptyHtml, spoilerLabel = 'Показать предыдущие') {
+  if (!rowsHtmlArray || !rowsHtmlArray.length) return emptyHtml;
+  if (rowsHtmlArray.length === 1) return rowsHtmlArray[0];
+  return rowsHtmlArray[0] +
+    `<details class="history-spoiler"><summary>${spoilerLabel} (${rowsHtmlArray.length - 1})</summary><div class="spoiler-items">${rowsHtmlArray.slice(1).join('')}</div></details>`;
+}
 
 function resetDrumToAverage(ordersCount = quickOrders) {
   const avgCents = averageOrderAmountCents(state, ordersCount);
@@ -93,7 +107,7 @@ const icon = (name) => {
   return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[name] || paths.more}</svg>`;
 };
 
-const views = { home: 'Обзор', transactions: 'Операции', courier: 'Доставка', accounts: 'Счета', more: 'Ещё' };
+const views = { home: 'Обзор', transactions: 'Операции', courier: 'Работа', accounts: 'Счета', more: 'Ещё' };
 const subViews = ['budget', 'reports', 'settings', 'categories', 'quick', 'recurring', 'earnings', 'purchases', 'forecast', 'monthly'];
 
 function toast(msg) {
@@ -115,12 +129,16 @@ function openIDB() {
   });
 }
 
-async function mirrorToIDB(rawState) {
+async function mirrorToIDB(rawState, nextObj = state) {
   try {
     const db = await openIDB();
     const tx = db.transaction('kv', 'readwrite');
-    tx.objectStore('kv').put(rawState, 'latest');
-    tx.objectStore('kv').put({ stamp: new Date().toISOString(), data: rawState }, 'day_' + today());
+    const store = tx.objectStore('kv');
+    store.put(rawState, 'latest');
+    store.put(JSON.stringify(exportModulePayload(nextObj, 'finance')), 'mod_finance');
+    store.put(JSON.stringify(exportModulePayload(nextObj, 'courier')), 'mod_courier');
+    store.put(JSON.stringify(exportModulePayload(nextObj, 'repair')), 'mod_repair');
+    store.put({ stamp: new Date().toISOString(), data: rawState }, 'day_' + today());
   } catch {}
 }
 
@@ -148,7 +166,7 @@ function persist(next = state) {
     localStorage.setItem(KEY, raw);
     toast('Старые автокопии в localStorage очищены, база сохранена в IndexedDB');
   }
-  mirrorToIDB(raw);
+  mirrorToIDB(raw, next);
   state = next;
 }
 
@@ -238,6 +256,52 @@ async function download(name, obj) {
   a.download = name;
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+
+function moduleFileName(mod = 'all') {
+  const suffix = { all: 'full', finance: 'finance', courier: 'courier', repair: 'repair-clients' }[mod] || 'full';
+  return `financier-${suffix}-${today()}.json`;
+}
+
+function moduleTitleLabel(mod = 'all') {
+  return {
+    all: '📦 Полная база (Финансы + Курьерка + Ремонт)',
+    finance: '💸 Модуль: Траты, счета и долги',
+    courier: '🛵 Модуль: Курьерка (смены и расчётки)',
+    repair: '🛠 Модуль: Ремонт техники, клиенты и подписи'
+  }[mod] || 'Резервная копия';
+}
+
+function downloadModuleBackup(mod = 'all') {
+  const payload = exportModulePayload(state, mod);
+  return download(moduleFileName(mod), payload);
+}
+
+async function shareModuleBackup(mod = 'all') {
+  const name = moduleFileName(mod);
+  const payload = exportModulePayload(state, mod);
+  const text = JSON.stringify(payload, null, 2);
+  try {
+    if (await nativeApkShareFile(name, text)) {
+      toast('Копия готова к отправке');
+      return;
+    }
+  } catch (e) {
+    if (e?.name === 'AbortError' || String(e?.message || '').includes('canceled')) return;
+  }
+  try {
+    const file = new File([new Blob([text], { type: 'application/json' })], name, { type: 'application/json' });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      await navigator.share({ files: [file], title: moduleTitleLabel(mod), text: moduleTitleLabel(mod) + ' от ' + today() });
+      toast('Копия отправлена');
+      return;
+    }
+  } catch (e) {
+    if (e?.name === 'AbortError') return;
+  }
+  try { await navigator.clipboard.writeText(text); toast('JSON скопирован в буфер обмена'); } catch {}
+  backupTextModal(text, moduleTitleLabel(mod));
 }
 
 async function shareBackup() {
@@ -446,11 +510,27 @@ function transactionsView() {
     (!filters.category || (t.items?.length ? t.items.some(i => categoryMatches(state, i.categoryId, filters.category)) : categoryMatches(state, t.categoryId, filters.category))) &&
     (!filters.importance || (t.items?.length ? t.items.some(i => i.importance === filters.importance) : t.importance === filters.importance))
   ).sort((a, b) => b.date.localeCompare(a.date) || b.createdAt - a.createdAt);
-  const hasActiveFilters = Boolean(filters.from || filters.to || filters.category || filters.importance || filters.search || filters.typeGroup);
 
-  return `<div class="card"><div class="cardhead"><h2>История операций</h2><div class="actions"><span class="pill">${ts.length} записей</span><button type="button" class="ghost filter-trigger" data-action="openFilters" aria-label="Фильтры"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="10" cy="10" r="7"/><path d="m15 15 6 6"/></svg>${hasActiveFilters ? '<span class="filter-active"></span>' : ''}</button></div></div>` +
+  const hasActiveFilters = Boolean(filters.from || filters.to || filters.category || filters.importance || filters.search || filters.typeGroup);
+  const totalPages = Math.max(1, Math.ceil(ts.length / TX_PAGE_SIZE));
+  if (txPage > totalPages) txPage = totalPages;
+  if (txPage < 1) txPage = 1;
+  const startIdx = (txPage - 1) * TX_PAGE_SIZE;
+  const pageItems = ts.slice(startIdx, startIdx + TX_PAGE_SIZE);
+
+  const pagerHtml = ts.length > TX_PAGE_SIZE
+    ? `<div class="tx-pager">` +
+        `<button type="button" class="small ghost" data-action="txPageMove" data-id="-1" ${txPage <= 1 ? 'disabled' : ''}>← Новее</button>` +
+        `<span class="tx-pager-info">Стр. <b>${txPage}</b> из <b>${totalPages}</b> <small class="muted">(${startIdx + 1}–${Math.min(ts.length, startIdx + TX_PAGE_SIZE)} из ${ts.length})</small></span>` +
+        `<button type="button" class="small ghost" data-action="txPageMove" data-id="1" ${txPage >= totalPages ? 'disabled' : ''}>Старее →</button>` +
+      `</div>`
+    : '';
+
+  return `<div class="card"><div class="cardhead"><h2>История операций</h2><div class="actions"><span class="pill">${ts.length} записей · по ${TX_PAGE_SIZE} на стр.</span><button type="button" class="ghost filter-trigger" data-action="openFilters" aria-label="Фильтры"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="10" cy="10" r="7"/><path d="m15 15 6 6"/></svg>${hasActiveFilters ? '<span class="filter-active"></span>' : ''}</button></div></div>` +
     `<div class="tx-quick-bar"><input type="search" id="liveTxSearch" value="${esc(filters.search)}" placeholder="🔍 Поиск по названию, категории или должнику…"><div class="tx-chips">${[['', 'Все'], ['expense', 'Расходы'], ['income', 'Доходы'], ['debt', 'Долги'], ['transfer', 'Переводы']].map(([id, label]) => `<button type="button" class="small ${filters.typeGroup === id ? 'primary' : 'ghost'}" data-tx-group="${id}">${label}</button>`).join('')}${hasActiveFilters ? `<button type="button" class="small danger" data-action="resetFilters">Сбросить</button>` : ''}</div></div>` +
-    `${ts.map(row).join('') || '<div class="empty">По выбранным условиям операций нет</div>'}</div>`;
+    `${pagerHtml}` +
+    `${pageItems.map(row).join('') || '<div class="empty">По выбранным условиям операций нет</div>'}` +
+    `${pagerHtml}</div>`;
 }
 
 function deliveryList(x) {
@@ -472,7 +552,7 @@ function deliveryList(x) {
   ).join('');
 }
 
-function courierView() {
+function deliverySectionHtml() {
   const active = state.courierShifts.filter(x => x.startedAt && !x.endedAt);
   const closed = state.courierShifts.filter(x => !x.startedAt || x.endedAt);
   const pendingPayout = state.courierStatements.reduce((n, r) => n + statementRemaining(state, r.id), 0);
@@ -508,7 +588,7 @@ function courierView() {
           `</div>` +
           `<div class="formgrid">` +
             `<label class="field"><span>Время начала смены</span><input type="time" id="startShiftTimeInput" value="${esc(nowClock)}" required></label>` +
-            `<label class="field"><span>Пробег на старте, км</span><input type="text" inputmode="decimal" data-no-math="true" id="startShiftOdoInput" value="${esc(lastOdo)}" placeholder="Например: 154200"></label>` +
+            `<label class="field"><span>Пробег на старте, км</span><input type="text" inputmode="decimal" data-no-math="true" id="startShiftOdoInput" value="" placeholder="Введи пробег с приборки"></label>` +
           `</div>` +
           `<button type="button" class="primary courier-order" data-action="startDeliveryShift">▶ Выйти на смену</button>` +
         `</section>`
@@ -646,15 +726,23 @@ function courierView() {
       `</div>` +
       `<div class="actions">${btn('courierPayout', '💰 Пришла выплата на карту', '', 'primary')}${btn('autoStatement', '📋 Сверить и внести расчётку', '', 'soft')}</div>`
     ) +
-    section('Расчётки по неделям', [...state.courierStatements].sort((a, b) => b.to.localeCompare(a.to)).map(r => {
-      const rem = statementRemaining(state, r.id);
-      return `<div class="row wrap-row"><div class="row-main"><b>${date(r.from)} — ${date(r.to)}</b><small>${r.note ? esc(r.note) + ' · ' : ''}${rem > 0 ? `Ждёт выплаты: <b class="expected-text">${rub(rem)}</b>` : '✓ Выплачено на счёт'}</small></div><b class="amount">${rub(r.amount)}</b><div class="actions">${rem > 0 ? btn('statementPayout', 'Зачислить на счёт', r.id, 'small primary') : ''}${btn('editStatement', '✎', r.id, 'small ghost')}</div></div>`;
-    }).join('') || '<p class="muted">Когда придёт недельная расчётка, нажми «Сверить и внести расчётку» — увидишь бонус или расхождение со сменами.</p>') +
-    section('История смен', [...closed].sort((a, b) => b.date.localeCompare(a.date)).map(x => {
-      const t = shiftTotals(state, x), exp = shiftExpensesTotal(x), clean = t.net - exp - (t.fuelCost || 0);
-      const rate = t.hours > 0 ? Math.round(clean / t.hours) : 0;
-      return listButton(x.entries ? 'shiftDetails' : 'editShift', `${date(x.date)} · чистыми ${rub(clean)}`, `Поездок: ${t.trips ?? '—'} · выдач: ${t.orders} · грязными ${rub(t.earned)}${t.tips ? ' + чай ' + rub(t.tips) : ''}${t.fuelCost ? ` − бенз ${rub(t.fuelCost)} (${t.fuelKm} км)` : ''}${exp ? ' − расх ' + rub(exp) : ''} · налог ${x.taxPercent ?? 0}%${rate ? ' · ' + rub(rate) + '/ч' : ''}`, x.id);
-    }).join('') || '<p class="muted">История закрытых смен с чистым заработком, пробегом и темпом ₽/час.</p>');
+    section('Расчётки по неделям', singleLatestList(
+      [...state.courierStatements].sort((a, b) => b.to.localeCompare(a.to)).map(r => {
+        const rem = statementRemaining(state, r.id);
+        return `<div class="row wrap-row"><div class="row-main"><b>${date(r.from)} — ${date(r.to)}</b><small>${r.note ? esc(r.note) + ' · ' : ''}${rem > 0 ? `Ждёт выплаты: <b class="expected-text">${rub(rem)}</b>` : '✓ Выплачено на счёт'}</small></div><b class="amount">${rub(r.amount)}</b><div class="actions">${rem > 0 ? btn('statementPayout', 'Зачислить на счёт', r.id, 'small primary') : ''}${btn('editStatement', '✎', r.id, 'small ghost')}</div></div>`;
+      }),
+      '<p class="muted">Когда придёт недельная расчётка, нажми «Сверить и внести расчётку».</p>',
+      'Предыдущие расчётки'
+    )) +
+    section('История смен', singleLatestList(
+      [...closed].sort((a, b) => b.date.localeCompare(a.date)).map(x => {
+        const t = shiftTotals(state, x), exp = shiftExpensesTotal(x), clean = t.net - exp - (t.fuelCost || 0);
+        const rate = t.hours > 0 ? Math.round(clean / t.hours) : 0;
+        return listButton(x.entries ? 'shiftDetails' : 'editShift', `${date(x.date)} · чистыми ${rub(clean)}`, `Поездок: ${t.trips ?? '—'} · выдач: ${t.orders} · грязными ${rub(t.earned)}${t.tips ? ' + чай ' + rub(t.tips) : ''}${t.fuelCost ? ` − бенз ${rub(t.fuelCost)} (${t.fuelKm} км)` : ''}${exp ? ' − расх ' + rub(exp) : ''} · налог ${x.taxPercent ?? 0}%${rate ? ' · ' + rub(rate) + '/ч' : ''}`, x.id);
+      }),
+      '<p class="muted">История закрытых смен с чистым заработком, пробегом и темпом ₽/час.</p>',
+      'Предыдущие смены'
+    ));
 }
 
 function accountsView() {
@@ -971,13 +1059,21 @@ function settingsView() {
       `<div class="theme-picker">${[['auto', 'Авто (система)'], ['light', 'Светлая'], ['dark', 'Тёмная (OLED)']].map(([id, n]) => btn('setTheme', n, id, curTheme === id ? 'primary' : 'ghost')).join('')}</div>` +
       `<p class="muted">Дизайн-система Android 2026 (Material 3 Expressive). Тёмная тема оптимизирована под AMOLED-экраны.</p>`
     ) +
-    section('Резервные копии и APK-защита',
-      `<p class="muted">Каждое изменение автоматически сохраняется в локальной базе и дублируется в защищённое хранилище <b>IndexedDB</b>.</p>` +
+    section('Модульные базы (3-в-1) и резервные копии',
+      `<p class="muted">Данные разделены на 3 независимых отсека (<b>Финансы</b>, <b>Курьерка</b>, <b>Ремонт + подписи</b>). Можно выгружать и восстанавливать как всю базу разом, так и любой модуль отдельно:</p>` +
       `<div class="actions">` +
-        `${btn('shareBackup', '📤 Отправить копию (Telegram / Файлы)', '', 'primary')}` +
-        `${btn('backup', 'Скачать .json', '', 'soft')}` +
-        `${btn('restore', 'Восстановить (текст / файл)', '', 'ghost')}` +
-        `${btn('backupText', 'Копия текстом', '', 'ghost')}` +
+        `${btn('shareBackup', '📤 Полный бэкап (все 3 базы)', '', 'primary')}` +
+        `${btn('restore', '📥 Восстановить (текст / файл / модуль)', '', 'soft')}` +
+        `${btn('backupText', '📋 Копия текстом', '', 'ghost')}` +
+      `</div>` +
+      `<div class="sub-box section">` +
+        `<h3>Раздельная выгрузка по 3 базам</h3>` +
+        `<div class="actions section">` +
+          `${btn('shareModuleBackup', '💸 Траты и счета', 'finance', 'small soft')}` +
+          `${btn('shareModuleBackup', '🛵 Курьерка', 'courier', 'small soft')}` +
+          `${btn('shareModuleBackup', '🛠 Ремонт и клиенты', 'repair', 'small soft')}` +
+          `${btn('backupModule', 'Скачать .json (Ремонт)', 'repair', 'small ghost')}` +
+        `</div>` +
       `</div>` +
       `<div class="actions section">` +
         `${btn('autoCopies', 'Автокопии (14 дн.)', '', 'soft')}` +
@@ -1246,15 +1342,22 @@ function transactionModal(t, defaults = {}, resuming = false) {
         if (signed < 0) return `🤝 ${x.name} · я должен ${rub(Math.abs(signed))}`;
         return `🤝 ${x.name} · в расчёте (0 ₽)`;
       };
-      const labelTitle = {
-        lend: 'Кому даёшь в долг',
-        borrow: 'У кого берёшь в долг (включая тех, кто должен тебе)',
-        repay_in: 'Кто вернул тебе долг',
-        repay_out: 'Кому возвращаешь долг или рассрочку'
-      }[type];
-
+      const isPlusSign = ['lend', 'repay_in'].includes(type);
       dialog.querySelector('#debtFields').innerHTML =
-        `<div class="debt-field-header"><span>${labelTitle}</span><button type="button" class="small soft" id="btnToggleNewDebt">${selectedDebt === '__new__' && list.length ? 'Выбрать из списка' : '+ Новый человек'}</button></div>` +
+        `<div class="debt-sign-box">` +
+          `<div class="debt-sign-tabs">` +
+            `<button type="button" class="debt-sign-btn ${isPlusSign ? 'sign-plus-active' : 'ghost'}" data-debt-sign="plus">➕ В плюс (Дал / Мне вернули)</button>` +
+            `<button type="button" class="debt-sign-btn ${!isPlusSign ? 'sign-minus-active' : 'ghost'}" data-debt-sign="minus">➖ В минус (Взял / Я должен)</button>` +
+          `</div>` +
+          `<div class="debt-submode-row">` +
+            (isPlusSign
+              ? `<button type="button" class="small ${type === 'lend' ? 'primary' : 'ghost'}" data-debt-exact-type="lend">Я дал в долг (− со счёта)</button>` +
+                `<button type="button" class="small ${type === 'repay_in' ? 'primary' : 'ghost'}" data-debt-exact-type="repay_in">Мне вернули (+ на счёт)</button>`
+              : `<button type="button" class="small ${type === 'borrow' ? 'primary' : 'ghost'}" data-debt-exact-type="borrow">Я взял в долг (+ на счёт)</button>` +
+                `<button type="button" class="small ${type === 'repay_out' ? 'primary' : 'ghost'}" data-debt-exact-type="repay_out">Я отдал долг (− со счёта)</button>`) +
+          `</div>` +
+        `</div>` +
+        `<div class="debt-field-header"><span>Человек (баланс пересчитается автоматически)</span><button type="button" class="small soft" id="btnToggleNewDebt">${selectedDebt === '__new__' && list.length ? 'Выбрать из списка' : '+ Новый человек'}</button></div>` +
         `<select name="debtId" id="txDebtSelect" required>` +
           `${list.map(x => option(x.id, describeDebtOption(x), selectedDebt)).join('')}` +
           `${option('__new__', '➕ Новый человек / создать прямо здесь…', selectedDebt)}` +
@@ -1284,6 +1387,20 @@ function transactionModal(t, defaults = {}, resuming = false) {
         sel.value = (sel.value === '__new__' && list.length) ? list[0].id : '__new__';
         syncNewBox();
       };
+      dialog.querySelectorAll('[data-debt-sign]').forEach(b => {
+        b.onclick = () => {
+          const typeSel = dialog.querySelector('[name=type]');
+          typeSel.value = b.dataset.debtSign === 'plus' ? 'lend' : 'borrow';
+          drawType();
+        };
+      });
+      dialog.querySelectorAll('[data-debt-exact-type]').forEach(b => {
+        b.onclick = () => {
+          const typeSel = dialog.querySelector('[name=type]');
+          typeSel.value = b.dataset.debtExactType;
+          drawType();
+        };
+      });
     } else {
       dialog.querySelector('#debtFields').innerHTML = '';
     }
@@ -1704,7 +1821,7 @@ function startDeliveryShift() {
 
   const odoInp = app.querySelector('#startShiftOdoInput');
   const rawOdo = odoInp ? odoInp.value.trim().replace(',', '.') : '';
-  const odoStart = rawOdo && Number(rawOdo) >= 0 ? Number(rawOdo) : (lastKnownOdometer(state) || null);
+  const odoStart = rawOdo !== '' && Number(rawOdo) >= 0 ? Number(rawOdo) : null;
 
   mutate(s => {
     s.courier.taxPercent = taxPercent;
@@ -2173,7 +2290,7 @@ function restoreModal() {
       if (!restoreModal.pending) {
         const rawText = dialog.querySelector('#restoreJsonText')?.value?.trim();
         if (rawText) {
-          restoreModal.pending = validateState(JSON.parse(rawText));
+          restoreModal.pending = mergeModulePayload(state, JSON.parse(rawText));
         } else {
           throw Error('Вставь текст JSON или выбери файл резервной копии');
         }
@@ -2199,9 +2316,14 @@ setTimeout(() => { checkStartupPaymentAlerts(); syncNativeNotifications(false); 
       return;
     }
     try {
-      const data = validateState(JSON.parse(raw.trim()));
-      restoreModal.pending = data;
-      statusEl.innerHTML = `✅ <b>Копия проверена:</b> счетов — <b>${data.accounts.length}</b>, операций — <b>${data.transactions.length}</b>, смен — <b>${(data.courierShifts || []).length}</b>. Нажми «Сохранить» внизу!`;
+      const parsed = JSON.parse(raw.trim());
+      const merged = mergeModulePayload(state, parsed);
+      restoreModal.pending = merged;
+      const modName = parsed.module === 'finance' ? '💸 Модуль «Траты и счета»'
+        : parsed.module === 'courier' ? '🛵 Модуль «Курьерка»'
+        : parsed.module === 'repair' ? `🛠 Модуль «Ремонт и клиенты» (клиентов: ${(merged.repair?.clients || []).length}, устройств: ${(merged.repair?.devices || []).length})`
+        : `📦 Полная база (счетов: ${merged.accounts.length}, операций: ${merged.transactions.length}, клиентов ремонта: ${(merged.repair?.clients || []).length})`;
+      statusEl.innerHTML = `✅ <b>Копия проверена:</b> ${modName}. Остальные разделы сохранены. Нажми «Сохранить»!`;
     } catch (err) {
       restoreModal.pending = null;
       errEl.textContent = 'Ошибка формата JSON: ' + err.message;
@@ -2373,7 +2495,7 @@ async function sendImmediateNotification(title, body, idNum = 9001) {
 async function triggerTestNotification() {
   const dueList = duePaymentNotifications(state);
   const sample = dueList[0] || {
-    title: '🔔 Проверка уведомлений Финансист 3.2',
+    title: '🔔 Проверка уведомлений Финансист 3.4',
     body: 'Уведомления работают! Приложение напомнит за 1 день до платежа, в день оплаты и при просрочке.'
   };
   const ok = await sendImmediateNotification(sample.title, sample.body, Math.floor(Date.now() % 100000));
@@ -2461,6 +2583,1170 @@ function checkStartupPaymentAlerts() {
   sendImmediateNotification(dueList[0].title, dueList[0].body, 8801);
 }
 
+
+// ==============================================================================
+// TECH REPAIR CRM MODALS, PRICE LIST, OFFER & PDF GENERATOR (Financier 3.3)
+// ==============================================================================
+
+
+// 3x3 Pattern Lock SVG Helper (points 1..9)
+function patternDotCoords(num) {
+  const idx = Math.max(0, Math.min(8, Number(num) - 1));
+  const row = Math.floor(idx / 3), col = idx % 3;
+  return { x: 30 + col * 60, y: 30 + row * 60 };
+}
+
+function buildPatternLinesSvg(seqStr = '') {
+  const nums = String(seqStr || '').split('-').map(Number).filter(n => n >= 1 && n <= 9);
+  if (nums.length < 2) return '';
+  const lines = [];
+  for (let i = 0; i < nums.length - 1; i++) {
+    const a = patternDotCoords(nums[i]);
+    const b = patternDotCoords(nums[i + 1]);
+    const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+    lines.push(`<line x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}" stroke="#6366F1" stroke-width="5" stroke-linecap="round"/>`);
+    lines.push(`<circle cx="${mx}" cy="${my}" r="3.5" fill="#34D399"/>`);
+  }
+  return lines.join('');
+}
+
+function copyRepairClientStatus(devId) {
+  const dev = (state.repair?.devices || []).find(d => d.id === devId);
+  if (!dev) return;
+  const client = (state.repair?.clients || []).find(c => c.id === dev.clientId);
+  const tot = repairDeviceTotals(dev);
+  const isReady = dev.status === 'ready' || dev.status === 'archived';
+  const lines = [
+    `Здравствуйте${client?.name ? ', ' + client.name : ''}!`,
+    `Статус по заказу №${dev.orderNum || '—'} (${dev.title}):`,
+    `• Статус: ${REPAIR_STATUSES[dev.status] || 'В работе'}`
+  ];
+  if (dev.diagnosis) lines.push(`• Диагноз / работы: ${dev.diagnosis}`);
+  if (tot.totalPrice > 0) {
+    lines.push(`• Общая стоимость: ${rub(tot.totalPrice)}`);
+    if (tot.prepayment > 0) {
+      lines.push(`• Внесённый аванс: ${rub(tot.prepayment)}`);
+      lines.push(`• Остаток к оплате при получении: ${rub(tot.remainingToPay)}`);
+    }
+  }
+  if (dev.promisedDate && !isReady) lines.push(`• Ориентировочная готовность: ${date(dev.promisedDate)}${dev.promisedTime ? ' к ' + dev.promisedTime : ''}`);
+  if (isReady && dev.warranty) lines.push(`• Гарантия: ${dev.warranty}`);
+  copy(lines.join('\n'));
+}
+
+function openSignaturePadModal(devId, sigKind = 'intake', returnToPdf = false) {
+  const dev = (state.repair?.devices || []).find(d => d.id === devId);
+  if (!dev) return;
+  const client = (state.repair?.clients || []).find(c => c.id === dev.clientId);
+  const tot = repairDeviceTotals(dev);
+  const isHandover = sigKind === 'handover';
+
+  let overlay = document.getElementById('fullscreenSigOverlay');
+  if (!overlay) {
+    overlay = document.createElement('div');
+    overlay.id = 'fullscreenSigOverlay';
+    overlay.className = 'fullscreen-sig-overlay';
+    document.body.appendChild(overlay);
+  }
+
+  overlay.innerHTML =
+    `<div class="sig-pad-shell">` +
+      `<div class="sig-pad-topbar">` +
+        `<div>` +
+          `<h3>✍️ ${isHandover ? 'Подпись при выдаче устройства' : 'Подпись при приёме в ремонт'}</h3>` +
+          `<small>${esc(dev.title)} · Заказчик: <b>${esc(client?.name || 'Клиент')}</b>${tot.totalPrice ? ` · Итого: <b>${rub(tot.totalPrice)}</b>` : ''}${isHandover && dev.warranty ? ` · Гарантия: <b>${esc(dev.warranty)}</b>` : ''}</small>` +
+        `</div>` +
+        `<div class="actions">` +
+          `<button type="button" class="soft small" id="sigClearBtn">Очистить</button>` +
+          `<button type="button" class="ghost small" id="sigCancelBtn">Отмена</button>` +
+          `<button type="button" class="primary small" id="sigSaveBtn">✅ Сохранить подпись</button>` +
+        `</div>` +
+      `</div>` +
+      `<div class="sig-canvas-stage" id="sigCanvasStage">` +
+        `<div class="sig-guide-line">` +
+          `<span class="sig-cross-mark" aria-hidden="true">✕</span>` +
+          `<span class="sig-guide-caption">${isHandover ? 'Устройство проверил, претензий не имею (подпись заказчика)' : 'С условиями приёма и оферты согласен (подпись заказчика)'}</span>` +
+        `</div>` +
+        `<canvas id="sigFullscreenCanvas"></canvas>` +
+      `</div>` +
+    `</div>`;
+
+  overlay.hidden = false;
+
+  const canvas = overlay.querySelector('#sigFullscreenCanvas');
+  const stage = overlay.querySelector('#sigCanvasStage');
+  const ctx = canvas.getContext('2d');
+  let drawing = false, hasStrokes = false, lastX = 0, lastY = 0;
+
+  const resizeCanvas = () => {
+    const rect = stage.getBoundingClientRect();
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    canvas.width = Math.max(320, Math.floor(rect.width * dpr));
+    canvas.height = Math.max(240, Math.floor(rect.height * dpr));
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.strokeStyle = '#0F172A';
+    ctx.lineWidth = 3.2;
+  };
+  resizeCanvas();
+
+  const getPos = (e) => {
+    const r = canvas.getBoundingClientRect();
+    const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+    const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+    return { x: clientX - r.left, y: clientY - r.top };
+  };
+
+  const startDraw = (e) => {
+    e.preventDefault();
+    drawing = true;
+    hasStrokes = true;
+    const p = getPos(e);
+    lastX = p.x;
+    lastY = p.y;
+    ctx.beginPath();
+    ctx.arc(lastX, lastY, 1.5, 0, Math.PI * 2);
+    ctx.fillStyle = '#0F172A';
+    ctx.fill();
+  };
+
+  const moveDraw = (e) => {
+    if (!drawing) return;
+    e.preventDefault();
+    const p = getPos(e);
+    ctx.beginPath();
+    ctx.moveTo(lastX, lastY);
+    ctx.lineTo(p.x, p.y);
+    ctx.stroke();
+    lastX = p.x;
+    lastY = p.y;
+  };
+
+  const endDraw = () => { drawing = false; };
+
+  canvas.addEventListener('pointerdown', startDraw);
+  canvas.addEventListener('pointermove', moveDraw);
+  canvas.addEventListener('pointerup', endDraw);
+  canvas.addEventListener('pointercancel', endDraw);
+
+  overlay.querySelector('#sigClearBtn').onclick = () => {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    hasStrokes = false;
+  };
+
+  overlay.querySelector('#sigCancelBtn').onclick = () => {
+    overlay.hidden = true;
+    overlay.innerHTML = '';
+    if (returnToPdf) repairPdfModal(devId, sigKind);
+  };
+
+  overlay.querySelector('#sigSaveBtn').onclick = () => {
+    if (!hasStrokes) {
+      toast('Распишись на экране рядом с крестиком ✕');
+      return;
+    }
+    const dataUrl = canvas.toDataURL('image/png');
+    mutate(s => {
+      const d = s.repair.devices.find(x => x.id === devId);
+      if (!d) return;
+      if (isHandover) {
+        d.handoverSignature = dataUrl;
+        d.handoverSignedAt = Date.now();
+      } else {
+        d.intakeSignature = dataUrl;
+        d.intakeSignedAt = Date.now();
+      }
+    });
+    overlay.hidden = true;
+    overlay.innerHTML = '';
+    toast(isHandover ? 'Подпись выдачи сохранена в акте!' : 'Подпись приёмки сохранена в акте!');
+    if (returnToPdf) repairPdfModal(devId, sigKind);
+  };
+}
+
+function selectActivePhone(clientId, idxStr) {
+  const idx = Number(idxStr);
+  mutate(s => {
+    const c = (s.repair?.clients || []).find(cl => cl.id === clientId);
+    if (!c || !Array.isArray(c.phones)) return;
+    c.phones.forEach((p, i) => { p.active = (i === idx); });
+  });
+  const c = (state.repair?.clients || []).find(cl => cl.id === clientId);
+  const active = getClientActivePhone(c);
+  toast(`Активный номер: ${active.number}`);
+}
+
+function repairClientModal(client = null) {
+  let phones = structuredClone(client?.phones?.length ? client.phones : [{ number: '', label: 'Основной', active: true }]);
+  const hasDevices = client && (state.repair?.devices || []).some(d => d.clientId === client.id);
+
+  modal(client ? 'Профиль клиента' : 'Новый клиент (ремонт)',
+    `<div class="formgrid">` +
+      field('ФИО / Имя клиента', input('name', client?.name || '', 'text', 'required maxlength="90" placeholder="Например: Сергей Иванов"'), true) +
+      field('Комментарий / адрес', input('note', client?.note || '', 'text', 'maxlength="160" placeholder="Адрес, подъезд, особенности…"'), true) +
+    `</div>` +
+    `<div class="section">` +
+      `<div class="cardhead"><h3>Номера телефонов клиента</h3><button type="button" class="small soft" id="addClientPhoneBtn">+ Ещё номер</button></div>` +
+      `<p class="muted">Отметь звёздочкой активный номер — по нему работает вызов в 1 клик.</p>` +
+      `<div id="clientPhonesList" class="section"></div>` +
+    `</div>` +
+    (client && !hasDevices ? `<button type="button" class="danger small section" id="deleteClientBtn">Удалить клиента</button>` : ''),
+    f => {
+      readPhonesDom();
+      const validPhones = phones.filter(p => p.number.trim());
+      if (!validPhones.length) throw Error('Укажи хотя бы один номер телефона');
+      if (!validPhones.some(p => p.active)) validPhones[0].active = true;
+      const name = (f.get('name') || '').trim();
+      if (!name) throw Error('Укажи имя клиента');
+      mutate(s => {
+        const entry = {
+          id: client?.id || uid(),
+          name,
+          phones: validPhones,
+          note: (f.get('note') || '').trim(),
+          createdAt: client?.createdAt || Date.now()
+        };
+        if (client) {
+          const idx = s.repair.clients.findIndex(x => x.id === client.id);
+          if (idx >= 0) s.repair.clients[idx] = entry;
+        } else {
+          s.repair.clients.push(entry);
+        }
+      });
+    }
+  );
+
+  const readPhonesDom = () => {
+    const listEl = dialog.querySelector('#clientPhonesList');
+    if (!listEl) return;
+    phones = [...listEl.querySelectorAll('[data-phone-row]')].map((rowEl, i) => ({
+      number: rowEl.querySelector('[data-ph-num]').value.trim(),
+      label: rowEl.querySelector('[data-ph-label]').value.trim() || 'Телефон',
+      active: rowEl.querySelector('[data-ph-active]').checked
+    }));
+  };
+
+  const drawPhonesDom = () => {
+    const listEl = dialog.querySelector('#clientPhonesList');
+    if (!listEl) return;
+    listEl.innerHTML = phones.map((p, i) => {
+      const href = normalizePhoneHref(p.number);
+      return `<div class="phone-edit-row" data-phone-row="${i}">` +
+        `<label class="phone-active-radio" title="Активный номер"><input type="radio" name="activePhoneRadio" data-ph-active ${p.active ? 'checked' : ''}><span>★</span></label>` +
+        `<input type="tel" inputmode="tel" data-ph-num value="${esc(p.number)}" placeholder="+7 999 123-45-67" required>` +
+        `<input type="text" data-ph-label value="${esc(p.label || '')}" placeholder="Личный / Рабочий">` +
+        `${href ? `<a class="call-dial-btn small" href="tel:${esc(href)}">📞</a>` : ''}` +
+        `${phones.length > 1 ? `<button type="button" class="schedule-del-btn" data-ph-del="${i}">✕</button>` : ''}` +
+      `</div>`;
+    }).join('');
+
+    listEl.querySelectorAll('[data-ph-active]').forEach((rad, idx) => {
+      rad.onchange = () => {
+        readPhonesDom();
+        phones.forEach((p, j) => { p.active = (j === idx); });
+        drawPhonesDom();
+      };
+    });
+    listEl.querySelectorAll('[data-ph-del]').forEach(b => {
+      b.onclick = () => {
+        readPhonesDom();
+        phones.splice(Number(b.dataset.phDel), 1);
+        if (phones.length && !phones.some(p => p.active)) phones[0].active = true;
+        drawPhonesDom();
+      };
+    });
+  };
+
+  dialog.querySelector('#addClientPhoneBtn').onclick = () => {
+    readPhonesDom();
+    phones.push({ number: '', label: 'Доп.', active: false });
+    drawPhonesDom();
+  };
+
+  const delBtn = dialog.querySelector('#deleteClientBtn');
+  if (delBtn) {
+    delBtn.onclick = () => {
+      mutate(s => { s.repair.clients = s.repair.clients.filter(x => x.id !== client.id); });
+      dialog.close();
+      toast('Клиент удалён');
+    };
+  }
+
+  drawPhonesDom();
+}
+
+function repairDeviceModal(devId = null, preClientId = null, startWindow = 'intake') {
+  const rep = state.repair || { clients: [], devices: [], priceList: [] };
+  const dev = devId ? rep.devices.find(d => d.id === devId) : null;
+  let curWin = startWindow || 'intake';
+  let services = structuredClone(dev?.services || []);
+  let selectedConditions = new Set(Array.isArray(dev?.conditions) ? dev.conditions : []);
+  let hasCustomCond = Boolean(dev?.conditionCustom);
+  let selectedAccessories = new Set(Array.isArray(dev?.accessories) ? dev.accessories : []);
+  let authType = dev?.authType || 'none';
+  let patternSeq = dev?.authPattern ? String(dev.authPattern).split('-').filter(Boolean) : [];
+
+  const clients = rep.clients || [];
+  const defaultNewClient = !dev && !preClientId && !clients.length;
+  let selectedClientId = dev?.clientId || preClientId || (defaultNewClient ? '__new__' : (clients[0]?.id || '__new__'));
+
+  const modalTitle = dev ? `Ремонт #${dev.orderNum || '—'} · ${esc(dev.title)}` : 'Принять устройство (опросник приёма)';
+
+  const bodyHtml =
+    `<div class="segmented repair-win-tabs" id="repairWinTabs">` +
+      `<button type="button" class="${curWin === 'intake' ? 'primary' : 'ghost'}" data-rep-win="intake">1. Опросник приёма</button>` +
+      `<button type="button" class="${curWin === 'diag' ? 'primary' : 'ghost'}" data-rep-win="diag">2. Диагноз и прайс</button>` +
+      `<button type="button" class="${curWin === 'call' ? 'primary' : 'ghost'}" data-rep-win="call">3. Прозвон / сроки</button>` +
+      `<button type="button" class="${curWin === 'warranty' ? 'primary' : 'ghost'}" data-rep-win="warranty">4. Подпись и PDF</button>` +
+    `</div>` +
+
+    /* ОКНО 1: БЫСТРЫЙ ОПРОСНИК ПРИЁМА ИЗ 5 ШАГОВ */
+    `<div class="rep-win-pane" data-rep-pane="intake" ${curWin === 'intake' ? '' : 'hidden'}>` +
+      /* Шаг 1. Клиент (поиск по последним 4 цифрам или новый) */
+      `<div class="sub-box">` +
+        `<div class="debt-field-header"><span><b>1. Клиент</b> (поиск по последним 4 цифрам или новый)</span><button type="button" class="small soft" id="toggleNewRepairClientBtn">${selectedClientId === '__new__' && clients.length ? 'Выбрать из базы' : '+ Новый клиент'}</button></div>` +
+        `<input type="search" id="intakeClientQuickSearch" placeholder="🔍 Введи последние 4 цифры телефона (например: 4567) или ФИО…" ${selectedClientId === '__new__' ? 'hidden' : ''}>` +
+        `<select name="clientId" id="repClientSelect" class="section">` +
+          `${clients.map(c => option(c.id, `👤 ${c.name} · ${getClientActivePhone(c).number || 'без номера'}`, selectedClientId)).join('')}` +
+          `${option('__new__', '➕ Новый клиент (ввести ФИО и телефон)…', selectedClientId)}` +
+        `</select>` +
+        `<div id="inlineNewRepairClientBox" class="inline-debt-box" ${selectedClientId === '__new__' ? '' : 'hidden'}>` +
+          `<div class="formgrid">` +
+            field('ФИО / Имя клиента', `<input name="newClientName" type="text" maxlength="90" placeholder="Например: Андрей Смирнов">`, true) +
+            field('Основной телефон', `<input name="newClientPhone1" type="tel" inputmode="tel" placeholder="+7 999 123-45-67">`) +
+            field('Второй телефон · необязательно', `<input name="newClientPhone2" type="tel" inputmode="tel" placeholder="+7 900 ...">`) +
+            field('Комментарий / адрес клиента', `<input name="newClientNote" type="text" maxlength="140" placeholder="Подъезд, домофон, заметка…">`, true) +
+          `</div>` +
+        `</div>` +
+        `<div id="selectedClientDialRow" class="section"></div>` +
+      `</div>` +
+
+      /* Шаг 2. Устройство и проблема со слов клиента */
+      `<div class="sub-box section">` +
+        `<h3>2. Устройство и проблема со слов клиента</h3>` +
+        `<div class="formgrid section">` +
+          field('Модель смартфона / техники', input('title', dev?.title || '', 'text', 'required maxlength="100" placeholder="Например: iPhone 14 Pro / Redmi Note 12 / Ноутбук ASUS"'), true) +
+          field('Проблема со слов клиента (жалоба)', input('issue', dev?.issue || '', 'text', 'required maxlength="200" placeholder="Не заряжается, разбит экран, висит на яблоке…"'), true) +
+          field('Статус заказа', `<select name="status">${Object.entries(REPAIR_STATUSES).map(([k, v]) => option(k, v, dev?.status || 'intake')).join('')}</select>`, true) +
+        `</div>` +
+        `<details class="section"><summary>🚗 Выездной ремонт (указать дату, время и адрес выезда)</summary>` +
+          `<div class="formgrid section">` +
+            field('Дата выезда', input('fieldVisitDate', dev?.fieldVisitDate || '', 'date')) +
+            field('Время выезда', input('fieldVisitTime', dev?.fieldVisitTime || '', 'time')) +
+            field('Адрес выезда', input('fieldVisitAddress', dev?.fieldVisitAddress || '', 'text', 'maxlength="160" placeholder="Улица, дом, кв."'), true) +
+          `</div>` +
+        `</details>` +
+      `</div>` +
+
+      /* Шаг 3. Состояние смартфона при приёме */
+      `<div class="sub-box section">` +
+        `<h3>3. Внешнее состояние при приёме</h3>` +
+        `<div class="quick-buttons section" id="conditionChipsGroup">` +
+          DEVICE_CONDITIONS.map(c => `<button type="button" class="small ${selectedConditions.has(c) ? 'primary' : 'ghost'}" data-cond-chip="${esc(c)}">${selectedConditions.has(c) ? '✓ ' : ''}${esc(c)}</button>`).join('') +
+          `<button type="button" class="small ${hasCustomCond ? 'primary' : 'ghost'}" id="condOtherToggleBtn">${hasCustomCond ? '✓ ' : ''}Другое…</button>` +
+        `</div>` +
+        `<div id="condCustomWrap" class="section" ${hasCustomCond ? '' : 'hidden'}>` +
+          field('Своё описание состояния / серийный №', input('conditionCustom', dev?.conditionCustom || dev?.serialOrAppearance || '', 'text', 'maxlength="160" placeholder="Например: Замят правый угол, нет болтов снизу"'), true) +
+        `</div>` +
+      `</div>` +
+
+      /* Шаг 4. Пароль от смартфона / Графический ключ (с визуализацией 3x3) */
+      `<div class="sub-box section">` +
+        `<h3>4. Пароль / Доступ для проверки</h3>` +
+        `<div class="segmented" id="authTypeTabs">` +
+          Object.entries(DEVICE_AUTH_TYPES).map(([k, label]) => `<button type="button" class="small ${authType === k ? 'primary' : 'ghost'}" data-auth-mode="${k}">${esc(label)}</button>`).join('') +
+        `</div>` +
+        `<div id="authPassPane" class="section" ${authType === 'pass' ? '' : 'hidden'}>` +
+          field('Цифровой пин-код или текстовый пароль', input('authValue', dev?.authValue || '', 'text', 'maxlength="80" placeholder="Например: 0852 или пароль учётной записи"'), true) +
+        `</div>` +
+        `<div id="authPatternPane" class="pattern-lock-box section" ${authType === 'pattern' ? '' : 'hidden'}>` +
+          `<div class="pattern-lock-header">` +
+            `<span>Нажимай точки по порядку рисунка ключа: <b id="patternSeqReadout">${patternSeq.length ? patternSeq.join(' → ') : 'не задан'}</b></span>` +
+            `<button type="button" class="small ghost" id="clearPatternBtn">Сбросить ключ</button>` +
+          `</div>` +
+          `<div class="pattern-grid-wrap" id="patternGridWrap">` +
+            `<svg class="pattern-svg-overlay" id="patternSvgOverlay" viewBox="0 0 180 180">${buildPatternLinesSvg(patternSeq.join('-'))}</svg>` +
+            `<div class="pattern-dots-grid" id="patternDotsGrid">` +
+              [1, 2, 3, 4, 5, 6, 7, 8, 9].map(n => {
+                const orderIdx = patternSeq.indexOf(String(n));
+                return `<button type="button" class="pattern-dot ${orderIdx >= 0 ? 'active' : ''}" data-pattern-dot="${n}">` +
+                  `<span class="pattern-dot-num">${orderIdx >= 0 ? (orderIdx + 1) : n}</span>` +
+                `</button>`;
+              }).join('') +
+            `</div>` +
+          `</div>` +
+        `</div>` +
+      `</div>` +
+
+      /* Шаг 5. Чек-боксы комплектации */
+      `<div class="sub-box section">` +
+        `<h3>5. Комплектация (что клиент оставил с устройством)</h3>` +
+        `<div class="quick-buttons section" id="accessoriesChipsGroup">` +
+          DEVICE_ACCESSORIES.map(a => `<button type="button" class="small ${selectedAccessories.has(a) ? 'primary' : 'ghost'}" data-acc-chip="${esc(a)}">${selectedAccessories.has(a) ? '☑ ' : '☐ '}${esc(a)}</button>`).join('') +
+        `</div>` +
+        `<div class="section">` +
+          field('Дополнительно по комплектации · необязательно', input('accessoriesCustom', dev?.accessoriesCustom || '', 'text', 'maxlength="120" placeholder="Например: блок питания 65W, переходник"'), true) +
+        `</div>` +
+      `</div>` +
+    `</div>` +
+
+    /* ОКНО 2: ДИАГНОЗ, ПРАЙС-ЛИСТ, АВАНС, ЗАПЧАСТИ И СРОК ВЫДАЧИ */
+    `<div class="rep-win-pane" data-rep-pane="diag" ${curWin === 'diag' ? '' : 'hidden'}>` +
+      `<div class="formgrid">` +
+        field('Поставленный диагноз мастера', `<textarea name="diagnosis" rows="2" maxlength="400" placeholder="Например: Замена дисплейного модуля, восстановление дорожки питания">${esc(dev?.diagnosis || '')}</textarea>`, true) +
+        field('Обещанная дата выдачи', input('promisedDate', dev?.promisedDate || '', 'date')) +
+        field('Время выдачи', input('promisedTime', dev?.promisedTime || '', 'time')) +
+      `</div>` +
+
+      `<div class="sub-box section">` +
+        `<div class="cardhead"><h3>📋 Работы по прайс-листу</h3><button type="button" class="small soft" id="addCustomServiceBtn">+ Своя строка</button></div>` +
+        `<div class="quick-buttons section" id="priceListQuickChips">` +
+          (rep.priceList || []).map(p => `<button type="button" class="small ghost" data-add-pricelist="${esc(p.id)}">+ ${esc(p.name)} (${rub(p.price)})</button>`).join('') +
+        `</div>` +
+        `<div id="deviceServicesList" class="section"></div>` +
+      `</div>` +
+
+      `<div class="formgrid section">` +
+        field('Себестоимость запчастей (мои затраты), ₽', input('partsCost', dev?.partsCost ? decimal(dev.partsCost) : '', 'text', 'inputmode="decimal" placeholder="0"')) +
+        field('Цена запчастей для клиента, ₽', input('partsClientPrice', dev?.partsClientPrice ? decimal(dev.partsClientPrice) : '', 'text', 'inputmode="decimal" placeholder="0"')) +
+        field('Предоплата / Аванс от клиента, ₽', input('prepayment', dev?.prepayment ? decimal(dev.prepayment) : '', 'text', 'inputmode="decimal" placeholder="0"')) +
+        field('Итоговая сумма для клиента, ₽', input('totalPrice', dev?.totalPrice ? decimal(dev.totalPrice) : '', 'text', 'inputmode="decimal" placeholder="Авторасчёт по прайсу"')) +
+      `</div>` +
+      `<div class="note section" id="repairProfitReadout"></div>` +
+    `</div>` +
+
+    /* ОКНО 3: ПРОЗВОН ЗАКАЗЧИКА И ПЕРЕНОС СРОКА РЕМОНТА */
+    `<div class="rep-win-pane" data-rep-pane="call" ${curWin === 'call' ? '' : 'hidden'}>` +
+      `<div class="sub-box">` +
+        `<h3>📞 Поставить заказчика на прозвон</h3>` +
+        `<p class="muted">Приложение напомнит позвонить клиенту, а перенести звонок можно в 1 тап:</p>` +
+        `<div class="formgrid section">` +
+          field('Дата звонка', input('callReminderDate', dev?.callReminderDate || '', 'date')) +
+          field('Время звонка', input('callReminderTime', dev?.callReminderTime || '', 'time')) +
+          field('О чём позвонить / согласовать', input('callReminderNote', dev?.callReminderNote || '', 'text', 'maxlength="160" placeholder="Согласовать стоимость детали / сообщить о готовности"'), true) +
+        `</div>` +
+        `<div class="actions section">` +
+          `<span class="muted">Перенести звонок:</span>` +
+          `<button type="button" class="small soft" data-shift-call="2h">Через 2 часа</button>` +
+          `<button type="button" class="small soft" data-shift-call="tomorrow10">На завтра 10:00</button>` +
+          `<button type="button" class="small soft" data-shift-call="plus3d">+3 дня</button>` +
+          `<button type="button" class="small ghost" data-shift-call="clear">Снять прозвон</button>` +
+        `</div>` +
+      `</div>` +
+
+      `<div class="sub-box section">` +
+        `<h3>⏳ Перенос даты ремонта / выдачи</h3>` +
+        `<div class="formgrid section">` +
+          field('Причина переноса', `<select name="postponeReason">${Object.entries(POSTPONE_REASONS).map(([k, v]) => option(k, v, dev?.postponeReason || '')).join('')}</select>`, true) +
+          field('Детали переноса (какую запчасть ждём / до какого числа думает клиент)', input('postponeNote', dev?.postponeNote || '', 'text', 'maxlength="180" placeholder="Ждём шлейф матрицы до пятницы"'), true) +
+        `</div>` +
+        `<div class="actions section">` +
+          `<span class="muted">Сдвинуть дату выдачи:</span>` +
+          `<button type="button" class="small soft" data-shift-promised="1">+1 день</button>` +
+          `<button type="button" class="small soft" data-shift-promised="3">+3 дня (запчасти)</button>` +
+          `<button type="button" class="small soft" data-shift-promised="7">+7 дней</button>` +
+        `</div>` +
+      `</div>` +
+    `</div>` +
+
+    /* ОКНО 4: РУЧНАЯ ПОДПИСЬ ВО ВЕСЬ ЭКРАН, ГАРАНТИЯ И PDF */
+    `<div class="rep-win-pane" data-rep-pane="warranty" ${curWin === 'warranty' ? '' : 'hidden'}>` +
+      `<div class="sub-box">` +
+        `<h3>🛡 Гарантия мастера (выставляешь сам)</h3>` +
+        `<div class="quick-buttons section">` +
+          ['Без гарантии', '14 дней', '30 дней', '3 месяца', '6 месяцев', '1 год'].map(w => `<button type="button" class="small soft" data-warranty-preset="${esc(w)}">${esc(w)}</button>`).join('') +
+        `</div>` +
+        `<div class="formgrid section">` +
+          field('Срок и условия гарантии для акта выдачи', input('warranty', dev?.warranty || '30 дней', 'text', 'maxlength="120" placeholder="Например: 30 дней на заменённый модуль"'), true) +
+        `</div>` +
+      `</div>` +
+
+      (dev ? `<div class="sub-box section">` +
+        `<h3>✍️ Ручная подпись клиента (во весь экран с ✕) и PDF</h3>` +
+        `<p class="muted">Дай клиенту расписаться пальцем на экране — подпись сразу встроится в PDF-акт:</p>` +
+        `<div class="actions section">` +
+          `<button type="button" class="soft small" id="signIntakeFullscreenBtn">✍️ Подпись на приёмку ${dev.intakeSignature ? '✓' : ''}</button>` +
+          `<button type="button" class="soft small" id="signHandoverFullscreenBtn">✍️ Подпись на выдачу ${dev.handoverSignature ? '✓' : ''}</button>` +
+          `<button type="button" class="ghost small" id="copyStatusInModalBtn">📋 Скопировать статус клиенту</button>` +
+        `</div>` +
+        `<div class="actions section">` +
+          `<button type="button" class="primary small" id="openIntakePdfBtn">📄 PDF Акт приёма</button>` +
+          `<button type="button" class="primary small" id="openHandoverPdfBtn">📄 PDF Акт выдачи и гарантия</button>` +
+        `</div>` +
+      `</div>` : `<div class="note section">Нажми «Сохранить» — и сразу сможешь открыть полноэкранную подпись клиента и PDF-акт.</div>`) +
+
+      (dev ? `<button type="button" class="danger small section" id="deleteRepairDevBtn">Удалить карточку устройства</button>` : '') +
+    `</div>`;
+
+  modal(modalTitle, bodyHtml, f => {
+    readServicesDom();
+    let clientId = f.get('clientId');
+    let newClientObj = null;
+    if (clientId === '__new__') {
+      const cName = (f.get('newClientName') || '').trim();
+      const ph1 = (f.get('newClientPhone1') || '').trim();
+      const ph2 = (f.get('newClientPhone2') || '').trim();
+      if (!cName) throw Error('Укажи ФИО / имя нового клиента');
+      if (!ph1) throw Error('Укажи телефон нового клиента');
+      const phones = [{ number: ph1, label: 'Основной', active: true }];
+      if (ph2) phones.push({ number: ph2, label: 'Доп.', active: false });
+      newClientObj = {
+        id: uid(),
+        name: cName,
+        phones,
+        note: (f.get('newClientNote') || '').trim(),
+        createdAt: Date.now()
+      };
+      clientId = newClientObj.id;
+    }
+
+    const title = (f.get('title') || '').trim();
+    if (!title) throw Error('Укажи название устройства');
+
+    const rawPartsCost = (f.get('partsCost') || '').trim();
+    const rawPartsClient = (f.get('partsClientPrice') || '').trim();
+    const rawPrepay = (f.get('prepayment') || '').trim();
+    const rawTotal = (f.get('totalPrice') || '').trim();
+    const partsCost = rawPartsCost ? cents(rawPartsCost) : 0;
+    const partsClientPrice = rawPartsClient ? cents(rawPartsClient) : 0;
+    const prepayment = rawPrepay ? cents(rawPrepay) : 0;
+    const servicesSum = services.reduce((n, s) => n + (Number(s.price) || 0), 0);
+    const totalPrice = rawTotal ? cents(rawTotal) : (servicesSum + partsClientPrice);
+
+    const pReason = f.get('postponeReason') || '';
+    let status = f.get('status') || 'intake';
+    if (pReason === 'parts' && status === 'intake') status = 'waiting_parts';
+    else if (pReason === 'client_thinking' && status === 'intake') status = 'waiting_client';
+
+    const condArray = [...selectedConditions];
+    const condCustom = hasCustomCond ? (f.get('conditionCustom') || '').trim() : '';
+    const accArray = [...selectedAccessories];
+    const accCustom = (f.get('accessoriesCustom') || '').trim();
+
+    mutate(s => {
+      if (newClientObj) s.repair.clients.push(newClientObj);
+      const orderNum = dev?.orderNum || (s.repair.nextOrderNum++);
+      const entry = {
+        id: dev?.id || uid(),
+        orderNum,
+        clientId,
+        title,
+        conditions: condArray,
+        conditionCustom: condCustom,
+        accessories: accArray,
+        accessoriesCustom: accCustom,
+        serialOrAppearance: [condArray.join(', '), condCustom].filter(Boolean).join(' · '),
+        authType,
+        authValue: authType === 'pass' ? (f.get('authValue') || '').trim() : '',
+        authPattern: authType === 'pattern' ? patternSeq.join('-') : '',
+        issue: (f.get('issue') || '').trim(),
+        status,
+        fieldVisitDate: f.get('fieldVisitDate') || '',
+        fieldVisitTime: f.get('fieldVisitTime') || '',
+        fieldVisitAddress: (f.get('fieldVisitAddress') || '').trim(),
+        diagnosis: (f.get('diagnosis') || '').trim(),
+        promisedDate: f.get('promisedDate') || '',
+        promisedTime: f.get('promisedTime') || '',
+        services,
+        partsCost,
+        partsClientPrice,
+        prepayment,
+        totalPrice,
+        callReminderDate: f.get('callReminderDate') || '',
+        callReminderTime: f.get('callReminderTime') || '',
+        callReminderNote: (f.get('callReminderNote') || '').trim(),
+        postponeReason: pReason,
+        postponeNote: (f.get('postponeNote') || '').trim(),
+        warranty: (f.get('warranty') || '30 дней').trim(),
+        intakeSignature: dev?.intakeSignature || null,
+        intakeSignedAt: dev?.intakeSignedAt || null,
+        handoverSignature: dev?.handoverSignature || null,
+        handoverSignedAt: dev?.handoverSignedAt || null,
+        createdAt: dev?.createdAt || Date.now(),
+        archivedAt: status === 'archived' ? (dev?.archivedAt || Date.now()) : null,
+        paidTransactionId: dev?.paidTransactionId || null
+      };
+      if (dev) {
+        const idx = s.repair.devices.findIndex(x => x.id === dev.id);
+        if (idx >= 0) s.repair.devices[idx] = entry;
+      } else {
+        s.repair.devices.push(entry);
+      }
+    });
+  });
+
+  // Tab switching inside device modal
+  dialog.querySelectorAll('[data-rep-win]').forEach(b => {
+    b.onclick = () => {
+      curWin = b.dataset.repWin;
+      dialog.querySelectorAll('[data-rep-win]').forEach(btnEl => {
+        btnEl.className = btnEl === b ? 'primary' : 'ghost';
+      });
+      dialog.querySelectorAll('[data-rep-pane]').forEach(pane => {
+        pane.hidden = pane.dataset.repPane !== curWin;
+      });
+    };
+  });
+
+  // Step 1: Client selector & 4-digit phone search
+  const clSelect = dialog.querySelector('#repClientSelect');
+  const clSearchInp = dialog.querySelector('#intakeClientQuickSearch');
+  const newClBox = dialog.querySelector('#inlineNewRepairClientBox');
+  const toggleNewClBtn = dialog.querySelector('#toggleNewRepairClientBtn');
+  const dialRow = dialog.querySelector('#selectedClientDialRow');
+
+  const syncClientSelectUi = () => {
+    const isNew = clSelect.value === '__new__';
+    newClBox.hidden = !isNew;
+    if (clSearchInp) clSearchInp.hidden = isNew;
+    if (toggleNewClBtn) toggleNewClBtn.textContent = isNew && clients.length ? 'Выбрать из базы' : '+ Новый клиент';
+    if (!isNew) {
+      const c = clients.find(x => x.id === clSelect.value);
+      dialRow.innerHTML = c ? renderClientPhonesBar(c) : '';
+    } else {
+      dialRow.innerHTML = '';
+    }
+  };
+  clSelect.onchange = syncClientSelectUi;
+  if (toggleNewClBtn) {
+    toggleNewClBtn.onclick = () => {
+      clSelect.value = (clSelect.value === '__new__' && clients.length) ? clients[0].id : '__new__';
+      syncClientSelectUi();
+    };
+  }
+  if (clSearchInp) {
+    clSearchInp.oninput = () => {
+      const q = clSearchInp.value.trim().toLowerCase();
+      const qDig = q.replace(/[^0-9]/g, '');
+      const matched = clients.filter(c => {
+        if (!q) return true;
+        if ((c.name || '').toLowerCase().includes(q)) return true;
+        return (c.phones || []).some(p => {
+          const d = p.number.replace(/[^0-9]/g, '');
+          return (qDig && (d.endsWith(qDig) || d.includes(qDig))) || p.number.toLowerCase().includes(q);
+        });
+      });
+      const nextSel = matched[0]?.id || (clients[0]?.id || '__new__');
+      clSelect.innerHTML =
+        matched.map(c => option(c.id, `👤 ${c.name} · ${getClientActivePhone(c).number || 'без номера'}`, nextSel)).join('') +
+        option('__new__', '➕ Новый клиент (ввести ФИО и телефон)…', matched.length ? nextSel : '__new__');
+      clSelect.value = matched.length ? matched[0].id : '__new__';
+      syncClientSelectUi();
+    };
+  }
+  syncClientSelectUi();
+
+  // Step 3: Condition chips & custom condition toggle
+  dialog.querySelectorAll('[data-cond-chip]').forEach(b => {
+    b.onclick = () => {
+      const val = b.dataset.condChip;
+      if (selectedConditions.has(val)) selectedConditions.delete(val);
+      else selectedConditions.add(val);
+      b.className = 'small ' + (selectedConditions.has(val) ? 'primary' : 'ghost');
+      b.textContent = (selectedConditions.has(val) ? '✓ ' : '') + val;
+    };
+  });
+  const condOtherBtn = dialog.querySelector('#condOtherToggleBtn');
+  const condCustomWrap = dialog.querySelector('#condCustomWrap');
+  if (condOtherBtn) {
+    condOtherBtn.onclick = () => {
+      hasCustomCond = !hasCustomCond;
+      condOtherBtn.className = 'small ' + (hasCustomCond ? 'primary' : 'ghost');
+      condOtherBtn.textContent = (hasCustomCond ? '✓ ' : '') + 'Другое…';
+      condCustomWrap.hidden = !hasCustomCond;
+    };
+  }
+
+  // Step 4: Auth mode & Interactive 3x3 Pattern Lock Pad
+  const passPane = dialog.querySelector('#authPassPane');
+  const patternPane = dialog.querySelector('#authPatternPane');
+  const syncAuthModeUi = () => {
+    dialog.querySelectorAll('[data-auth-mode]').forEach(b => {
+      b.className = 'small ' + (b.dataset.authMode === authType ? 'primary' : 'ghost');
+    });
+    passPane.hidden = authType !== 'pass';
+    patternPane.hidden = authType !== 'pattern';
+  };
+  dialog.querySelectorAll('[data-auth-mode]').forEach(b => {
+    b.onclick = () => {
+      authType = b.dataset.authMode;
+      syncAuthModeUi();
+    };
+  });
+
+  const redrawPatternUi = () => {
+    const svgEl = dialog.querySelector('#patternSvgOverlay');
+    const readoutEl = dialog.querySelector('#patternSeqReadout');
+    if (svgEl) svgEl.innerHTML = buildPatternLinesSvg(patternSeq.join('-'));
+    if (readoutEl) readoutEl.textContent = patternSeq.length ? patternSeq.join(' → ') : 'не задан';
+    dialog.querySelectorAll('[data-pattern-dot]').forEach(dotBtn => {
+      const n = dotBtn.dataset.patternDot;
+      const idx = patternSeq.indexOf(n);
+      dotBtn.classList.toggle('active', idx >= 0);
+      dotBtn.querySelector('.pattern-dot-num').textContent = idx >= 0 ? String(idx + 1) : n;
+    });
+  };
+
+  dialog.querySelectorAll('[data-pattern-dot]').forEach(dotBtn => {
+    dotBtn.onclick = () => {
+      const n = dotBtn.dataset.patternDot;
+      const idx = patternSeq.indexOf(n);
+      if (idx === patternSeq.length - 1) patternSeq.pop();
+      else if (idx === -1) patternSeq.push(n);
+      redrawPatternUi();
+    };
+  });
+  const clearPatBtn = dialog.querySelector('#clearPatternBtn');
+  if (clearPatBtn) {
+    clearPatBtn.onclick = () => {
+      patternSeq = [];
+      redrawPatternUi();
+    };
+  }
+
+  // Step 5: Accessories chips
+  dialog.querySelectorAll('[data-acc-chip]').forEach(b => {
+    b.onclick = () => {
+      const val = b.dataset.accChip;
+      if (selectedAccessories.has(val)) selectedAccessories.delete(val);
+      else selectedAccessories.add(val);
+      b.className = 'small ' + (selectedAccessories.has(val) ? 'primary' : 'ghost');
+      b.textContent = (selectedAccessories.has(val) ? '☑ ' : '☐ ') + val;
+    };
+  });
+
+  // Tab 2: Services, Prepayment & Profit readout
+  const readServicesDom = () => {
+    const listEl = dialog.querySelector('#deviceServicesList');
+    if (!listEl) return;
+    services = [...listEl.querySelectorAll('[data-srv-row]')].map((rowEl, i) => {
+      let pCents = 0;
+      try { pCents = cents(rowEl.querySelector('[data-srv-price]').value || '0'); } catch {}
+      return {
+        id: services[i]?.id || uid(),
+        name: rowEl.querySelector('[data-srv-name]').value.trim() || 'Работа по ремонту',
+        price: pCents
+      };
+    });
+  };
+
+  const updateProfitReadout = (autoFillTotal = false) => {
+    readServicesDom();
+    const srvSum = services.reduce((n, s) => n + (Number(s.price) || 0), 0);
+    let pCost = 0, pClient = 0, prepay = 0;
+    try { pCost = cents(dialog.querySelector('[name="partsCost"]').value || '0'); } catch {}
+    try { pClient = cents(dialog.querySelector('[name="partsClientPrice"]').value || '0'); } catch {}
+    try { prepay = cents(dialog.querySelector('[name="prepayment"]').value || '0'); } catch {}
+    const totalInp = dialog.querySelector('[name="totalPrice"]');
+    if (autoFillTotal || !totalInp.value.trim()) {
+      const calcTot = srvSum + pClient;
+      if (calcTot > 0) totalInp.value = decimal(calcTot);
+    }
+    let finalTotal = srvSum + pClient;
+    try {
+      if (totalInp.value.trim()) finalTotal = cents(totalInp.value);
+    } catch {}
+    const remToPay = Math.max(0, finalTotal - prepay);
+    const net = finalTotal - pCost;
+    const box = dialog.querySelector('#repairProfitReadout');
+    if (box) {
+      box.innerHTML =
+        `Работы: <b>${rub(srvSum)}</b> · Детали для клиента: <b>${rub(pClient)}</b> · Себестоимость деталей: <b>−${rub(pCost)}</b><br>` +
+        `Итого: <b>${rub(finalTotal)}</b>${prepay > 0 ? ` · Аванс: <b>${rub(prepay)}</b> · К доплате: <b class="expected-text">${rub(remToPay)}</b>` : ''} · Чистая прибыль: <b class="${net >= 0 ? 'positive' : 'negative'}">${rub(net)}</b>`;
+    }
+  };
+
+  const drawServicesDom = () => {
+    const listEl = dialog.querySelector('#deviceServicesList');
+    if (!listEl) return;
+    listEl.innerHTML = services.map((s, i) =>
+      `<div class="schedule-edit" data-srv-row="${i}">` +
+        `<span class="schedule-num">${i + 1}</span>` +
+        `<input type="text" data-srv-name value="${esc(s.name)}" placeholder="Название услуги / работы">` +
+        `<input type="text" inputmode="decimal" data-no-math="true" data-srv-price value="${decimal(s.price)}" placeholder="Цена ₽">` +
+        `<button type="button" class="schedule-del-btn" data-srv-del="${i}">✕</button>` +
+      `</div>`
+    ).join('') || '<p class="muted">Выбери работы из прайса выше или добавь свою строку.</p>';
+
+    listEl.querySelectorAll('[data-srv-price], [data-srv-name]').forEach(inp => {
+      inp.addEventListener('input', () => updateProfitReadout(true));
+    });
+    listEl.querySelectorAll('[data-srv-del]').forEach(b => {
+      b.onclick = () => {
+        readServicesDom();
+        services.splice(Number(b.dataset.srvDel), 1);
+        drawServicesDom();
+        updateProfitReadout(true);
+      };
+    });
+    enhanceMathInputs(listEl);
+  };
+
+  dialog.querySelectorAll('[data-add-pricelist]').forEach(b => {
+    b.onclick = () => {
+      readServicesDom();
+      const item = (rep.priceList || []).find(p => p.id === b.dataset.addPricelist);
+      if (!item) return;
+      services.push({ id: uid(), name: item.name, price: item.price });
+      drawServicesDom();
+      updateProfitReadout(true);
+    };
+  });
+
+  dialog.querySelector('#addCustomServiceBtn').onclick = () => {
+    readServicesDom();
+    services.push({ id: uid(), name: '', price: 0 });
+    drawServicesDom();
+  };
+
+  dialog.querySelector('[name="partsCost"]').addEventListener('input', () => updateProfitReadout(false));
+  dialog.querySelector('[name="partsClientPrice"]').addEventListener('input', () => updateProfitReadout(true));
+  dialog.querySelector('[name="prepayment"]').addEventListener('input', () => updateProfitReadout(false));
+  dialog.querySelector('[name="totalPrice"]').addEventListener('input', () => updateProfitReadout(false));
+
+  // Call reschedule shortcuts
+  dialog.querySelectorAll('[data-shift-call]').forEach(b => {
+    b.onclick = () => {
+      const mode = b.dataset.shiftCall;
+      const dInp = dialog.querySelector('[name="callReminderDate"]');
+      const tInp = dialog.querySelector('[name="callReminderTime"]');
+      if (mode === 'clear') {
+        dInp.value = '';
+        tInp.value = '';
+        toast('Напоминание о звонке снято');
+        return;
+      }
+      if (mode === '2h') {
+        const dt = new Date(Date.now() + 2 * 3600000);
+        dInp.value = localDatetime(dt.getTime()).slice(0, 10);
+        tInp.value = localDatetime(dt.getTime()).slice(11, 16);
+      } else if (mode === 'tomorrow10') {
+        dInp.value = addDays(today(), 1);
+        tInp.value = '10:00';
+      } else if (mode === 'plus3d') {
+        dInp.value = addDays(dInp.value || today(), 3);
+        if (!tInp.value) tInp.value = '12:00';
+      }
+      toast(`Прозвон перенесён на ${dInp.value} ${tInp.value}`);
+    };
+  });
+
+  dialog.querySelectorAll('[data-shift-promised]').forEach(b => {
+    b.onclick = () => {
+      const days = Number(b.dataset.shiftPromised);
+      const pInp = dialog.querySelector('[name="promisedDate"]');
+      pInp.value = addDays(pInp.value || today(), days);
+      toast(`Обещанная дата выдачи сдвинута на ${pInp.value}`);
+    };
+  });
+
+  dialog.querySelectorAll('[data-warranty-preset]').forEach(b => {
+    b.onclick = () => {
+      dialog.querySelector('[name="warranty"]').value = b.dataset.warrantyPreset;
+    };
+  });
+
+  if (dev) {
+    const sigInBtn = dialog.querySelector('#signIntakeFullscreenBtn');
+    const sigOutBtn = dialog.querySelector('#signHandoverFullscreenBtn');
+    const copyStBtn = dialog.querySelector('#copyStatusInModalBtn');
+    const inBtn = dialog.querySelector('#openIntakePdfBtn');
+    const outBtn = dialog.querySelector('#openHandoverPdfBtn');
+    const delBtn = dialog.querySelector('#deleteRepairDevBtn');
+    if (sigInBtn) sigInBtn.onclick = () => { dialog.close(); openSignaturePadModal(dev.id, 'intake', false); };
+    if (sigOutBtn) sigOutBtn.onclick = () => { dialog.close(); openSignaturePadModal(dev.id, 'handover', false); };
+    if (copyStBtn) copyStBtn.onclick = () => copyRepairClientStatus(dev.id);
+    if (inBtn) inBtn.onclick = () => { dialog.close(); repairPdfModal(dev.id, 'intake'); };
+    if (outBtn) outBtn.onclick = () => { dialog.close(); repairPdfModal(dev.id, 'handover'); };
+    if (delBtn) {
+      delBtn.onclick = () => {
+        mutate(s => { s.repair.devices = s.repair.devices.filter(x => x.id !== dev.id); });
+        dialog.close();
+        toast('Карточка устройства удалена');
+      };
+    }
+  }
+
+  drawServicesDom();
+  updateProfitReadout(false);
+}
+
+function handoverRepairModal(devId) {
+  const dev = (state.repair?.devices || []).find(d => d.id === devId);
+  if (!dev) return;
+  const client = (state.repair?.clients || []).find(c => c.id === dev.clientId);
+  const tot = repairDeviceTotals(dev);
+  const defaultAcc = state.accounts.find(a => a.kind !== 'savings')?.id || state.accounts[0]?.id || '';
+
+  modal(`Выдать устройство #${dev.orderNum || '—'} в архив`,
+    `<div class="shift-total"><span>К оплате с клиента (${esc(client?.name || 'Клиент')})</span><strong>${rub(tot.totalPrice)}</strong><small>Себестоимость запчастей: ${rub(tot.partsCost)} · Чистая прибыль: ${rub(tot.netProfit)}</small></div>` +
+    `<div class="formgrid section">` +
+      field('Итоговая сумма от клиента, ₽', input('totalPrice', tot.totalPrice ? decimal(tot.totalPrice) : '', 'text', 'inputmode="decimal" required')) +
+      field('Затраты на запчасти, ₽', input('partsCost', tot.partsCost ? decimal(tot.partsCost) : '0', 'text', 'inputmode="decimal"')) +
+      field('Гарантия при выдаче', input('warranty', dev.warranty || '30 дней', 'text', 'required'), true) +
+      field('Поставленный диагноз (сохранится в архиве клиента)', input('diagnosis', dev.diagnosis || '', 'text', 'required placeholder="Что было сделано / заменено"'), true) +
+      (state.accounts.length ? field('Зачислить оплату на счёт', `<select name="accountId">${option('', 'Не записывать в бюджет', '')}${accountOpts(defaultAcc)}</select>`, true) : '') +
+    `</div>`,
+    f => {
+      const totalCents = cents(f.get('totalPrice') || '0');
+      const partsCents = (f.get('partsCost') || '').trim() ? cents(f.get('partsCost')) : 0;
+      const accId = f.get('accountId');
+      mutate(s => {
+        const d = s.repair.devices.find(x => x.id === devId);
+        d.totalPrice = totalCents;
+        d.partsCost = partsCents;
+        d.warranty = (f.get('warranty') || '30 дней').trim();
+        d.diagnosis = (f.get('diagnosis') || '').trim();
+        d.status = 'archived';
+        d.archivedAt = Date.now();
+        d.callReminderDate = '';
+        if (accId && totalCents > 0) {
+          const incId = uid();
+          const repCatId = s.incomeDefaults?.repair || s.incomeDefaults?.other;
+          s.transactions.push({
+            id: incId,
+            type: 'income',
+            amount: totalCents,
+            date: today(),
+            accountId: accId,
+            categoryId: repCatId,
+            note: `Ремонт #${d.orderNum}: ${d.title}`,
+            createdAt: Date.now()
+          });
+          d.paidTransactionId = incId;
+          if (partsCents > 0) {
+            const expCatId = s.categories.find(c => c.kind === 'expense')?.id || 'other';
+            s.transactions.push({
+              id: uid(),
+              type: 'expense',
+              amount: partsCents,
+              date: today(),
+              accountId: accId,
+              categoryId: expCatId,
+              importance: 'essential',
+              deductFromCategoryId: repCatId,
+              note: `Запчасти для ремонта #${d.orderNum} (${d.title})`,
+              items: [],
+              createdAt: Date.now() + 1
+            });
+          }
+        }
+      });
+      setTimeout(() => repairPdfModal(devId, 'handover'), 120);
+    }
+  );
+}
+
+function repairSettingsModal() {
+  const rep = state.repair || {};
+  let priceRows = structuredClone(rep.priceList || []);
+
+  modal('📋 Прайс-лист и шаблон оферты (PDF)',
+    `<div class="formgrid">` +
+      field('Исполнитель / Мастер (для шапки PDF)', input('masterName', rep.masterName || 'Частный мастер / СЦ', 'text', 'required maxlength="100"')) +
+      field('Телефон мастера (для акта PDF)', input('masterPhone', rep.masterPhone || '', 'tel', 'inputmode="tel" placeholder="+7 999 ..."')) +
+    `</div>` +
+    `<div class="sub-box section">` +
+      `<div class="cardhead"><h3>Прайс-лист типовых работ</h3><button type="button" class="small soft" id="addPriceRowBtn">+ Добавить услугу</button></div>` +
+      `<div id="priceListEditor" class="section"></div>` +
+    `</div>` +
+    `<div class="formgrid section">` +
+      field('Условия оферты при ПРИЁМЕ техники (печатаются в Акте приёма)', `<textarea name="intakeOfferText" rows="4">${esc(rep.intakeOfferText || '')}</textarea>`, true) +
+      field('Условия гарантии и оферты при ВЫДАЧЕ (печатаются в Акте выдачи)', `<textarea name="handoverOfferText" rows="4">${esc(rep.handoverOfferText || '')}</textarea>`, true) +
+    `</div>`,
+    f => {
+      readPriceDom();
+      mutate(s => {
+        s.repair.masterName = (f.get('masterName') || 'Мастер').trim();
+        s.repair.masterPhone = (f.get('masterPhone') || '').trim();
+        s.repair.intakeOfferText = (f.get('intakeOfferText') || '').trim();
+        s.repair.handoverOfferText = (f.get('handoverOfferText') || '').trim();
+        s.repair.priceList = priceRows.filter(r => r.name.trim());
+      });
+    }
+  );
+
+  const readPriceDom = () => {
+    const el = dialog.querySelector('#priceListEditor');
+    if (!el) return;
+    priceRows = [...el.querySelectorAll('[data-pr-row]')].map((rowEl, i) => {
+      let p = 0;
+      try { p = cents(rowEl.querySelector('[data-pr-price]').value || '0'); } catch {}
+      return {
+        id: priceRows[i]?.id || uid(),
+        name: rowEl.querySelector('[data-pr-name]').value.trim(),
+        price: p
+      };
+    });
+  };
+
+  const drawPriceDom = () => {
+    const el = dialog.querySelector('#priceListEditor');
+    if (!el) return;
+    el.innerHTML = priceRows.map((r, i) =>
+      `<div class="schedule-edit" data-pr-row="${i}">` +
+        `<span class="schedule-num">${i + 1}</span>` +
+        `<input type="text" data-pr-name value="${esc(r.name)}" placeholder="Название услуги" required>` +
+        `<input type="text" inputmode="decimal" data-no-math="true" data-pr-price value="${decimal(r.price)}" placeholder="Цена ₽" required>` +
+        `<button type="button" class="schedule-del-btn" data-pr-del="${i}">✕</button>` +
+      `</div>`
+    ).join('');
+    el.querySelectorAll('[data-pr-del]').forEach(b => {
+      b.onclick = () => {
+        readPriceDom();
+        priceRows.splice(Number(b.dataset.prDel), 1);
+        drawPriceDom();
+      };
+    });
+    enhanceMathInputs(el);
+  };
+
+  dialog.querySelector('#addPriceRowBtn').onclick = () => {
+    readPriceDom();
+    priceRows.push({ id: uid(), name: '', price: 100000 });
+    drawPriceDom();
+  };
+
+  drawPriceDom();
+}
+
+function buildRepairActDocumentHtml(dev, docType = 'intake') {
+  const rep = state.repair || {};
+  const client = (rep.clients || []).find(c => c.id === dev.clientId);
+  const activePhone = getClientActivePhone(client).number || '—';
+  const tot = repairDeviceTotals(dev);
+  const isHandover = docType === 'handover';
+  const docDate = new Date().toLocaleDateString('ru-RU');
+  const title = isHandover
+    ? `АКТ ВЫПОЛНЕННЫХ РАБОТ И ГАРАНТИЙНЫЙ ТАЛОН № ${dev.orderNum || '—'}`
+    : `АКТ ПРИЁМА ТЕХНИКИ НА ДИАГНОСТИКУ / РЕМОНТ № ${dev.orderNum || '—'}`;
+  const offerLines = (isHandover ? rep.handoverOfferText : rep.intakeOfferText || '').split('\n').filter(Boolean);
+  const condText = formatDeviceConditionSummary(dev);
+  const accText = formatDeviceAccessoriesSummary(dev);
+  const sigDataUrl = isHandover ? dev.handoverSignature : dev.intakeSignature;
+
+  const servicesRows = (dev.services || []).map((s, idx) =>
+    `<tr><td>${idx + 1}</td><td>${esc(s.name)}</td><td style="text-align:right">${rub(s.price)}</td></tr>`
+  ).join('');
+  const partsRow = tot.partsClientPrice > 0
+    ? `<tr><td>${(dev.services?.length || 0) + 1}</td><td>Комплектующие и расходные материалы</td><td style="text-align:right">${rub(tot.partsClientPrice)}</td></tr>`
+    : '';
+
+  return `<div class="pdf-act-sheet" id="printableActSheet">` +
+    `<div class="pdf-act-header">` +
+      `<div>` +
+        `<h2>${esc(title)}</h2>` +
+        `<div class="pdf-act-sub">Дата: <b>${esc(docDate)}</b> · Исполнитель: <b>${esc(rep.masterName || 'Частный мастер')}</b>${rep.masterPhone ? ` (${esc(rep.masterPhone)})` : ''}</div>` +
+      `</div>` +
+    `</div>` +
+
+    `<table class="pdf-act-table">` +
+      `<tbody>` +
+        `<tr><th width="34%">Заказчик (ФИО)</th><td><b>${esc(client?.name || '—')}</b></td></tr>` +
+        `<tr><th>Контактный телефон</th><td>${esc(activePhone)}</td></tr>` +
+        `<tr><th>Устройство и модель</th><td><b>${esc(dev.title)}</b></td></tr>` +
+        `<tr><th>Состояние при приёме</th><td>${esc(condText)}</td></tr>` +
+        `<tr><th>Комплектация (оставлено с аппаратом)</th><td>${esc(accText)}</td></tr>` +
+        `<tr><th>Заявленная неисправность (со слов заказчика)</th><td>${esc(dev.issue || '—')}</td></tr>` +
+        (isHandover
+          ? `<tr><th>Выявленная неисправность (диагноз)</th><td><b>${esc(dev.diagnosis || 'Выполнены работы согласно списку')}</b></td></tr>` +
+            `<tr><th>Срок гарантии</th><td><b>${esc(dev.warranty || '30 дней')}</b></td></tr>`
+          : `<tr><th>Ориентировочная дата готовности / выезда</th><td>${esc(dev.promisedDate || dev.fieldVisitDate || 'По результатам диагностики')}</td></tr>` +
+            `<tr><th>Предварительная стоимость / Аванс</th><td>${tot.totalPrice > 0 ? rub(tot.totalPrice) : 'По итогам диагностики'}${tot.prepayment > 0 ? ` (внесён аванс: <b>${rub(tot.prepayment)}</b>)` : ''}</td></tr>`) +
+      `</tbody>` +
+    `</table>` +
+
+    (isHandover
+      ? `<h4 class="pdf-sec-title">Выполненные работы и комплектующие</h4>` +
+        `<table class="pdf-act-table">` +
+          `<thead><tr><th width="40">№</th><th>Наименование работы / детали</th><th width="130" style="text-align:right">Стоимость</th></tr></thead>` +
+          `<tbody>` +
+            `${servicesRows || `<tr><td>1</td><td>Ремонт и обслуживание (${esc(dev.diagnosis || dev.title)})</td><td style="text-align:right">${rub(tot.totalPrice)}</td></tr>`}` +
+            `${partsRow}` +
+            `<tr class="pdf-total-row"><td colspan="2"><b>ИТОГО СТОИМОСТЬ РАБОТ И ДЕТАЛЕЙ:</b></td><td style="text-align:right"><b>${rub(tot.totalPrice)}</b></td></tr>` +
+            (tot.prepayment > 0
+              ? `<tr><td colspan="2">Внесённая предоплата (аванс):</td><td style="text-align:right">−${rub(tot.prepayment)}</td></tr>` +
+                `<tr class="pdf-total-row"><td colspan="2"><b>ОСТАТОК К ДОПЛАТЕ ПРИ ВЫДАЧЕ:</b></td><td style="text-align:right"><b>${rub(tot.remainingToPay)}</b></td></tr>`
+              : '') +
+          `</tbody>` +
+        `</table>`
+      : '') +
+
+    `<div class="pdf-offer-box">` +
+      `<h4>Условия договора-оферты и гарантийные обязательства:</h4>` +
+      `${offerLines.map(line => `<p>${esc(line)}</p>`).join('')}` +
+    `</div>` +
+
+    `<div class="pdf-signatures">` +
+      `<div class="pdf-sig-col">` +
+        `<b>Исполнитель (Мастер):</b>` +
+        `<div class="pdf-sig-line">${esc(rep.masterName || '________________')} / _____________</div>` +
+        `<small>${isHandover ? 'Работы выполнил, устройство передал' : 'Устройство принял на диагностику/ремонт'}</small>` +
+      `</div>` +
+      `<div class="pdf-sig-col">` +
+        `<b>Заказчик (Клиент): ${esc(client?.name || '')}</b>` +
+        `<div class="pdf-sig-line pdf-sig-client-box">` +
+          `<span class="pdf-sig-cross">✕</span>` +
+          (sigDataUrl ? `<img class="pdf-sig-img" src="${sigDataUrl}" alt="Подпись заказчика">` : `<span class="pdf-sig-placeholder">Место для подписи</span>`) +
+        `</div>` +
+        `<small>${isHandover ? 'Устройство проверил, с условиями гарантии согласен, претензий не имею' : 'С условиями приёма и оферты ознакомлен и согласен'}</small>` +
+      `</div>` +
+    `</div>` +
+  `</div>`;
+}
+
+function repairPdfModal(devId, docType = 'intake') {
+  const dev = (state.repair?.devices || []).find(d => d.id === devId);
+  if (!dev) return;
+  const actHtml = buildRepairActDocumentHtml(dev, docType);
+  activePrintHtml = actHtml;
+  const isHandover = docType === 'handover';
+
+  modal(isHandover ? '📄 PDF: Акт выдачи и гарантия' : '📄 PDF: Акт приёма в ремонт',
+    `<div class="actions">` +
+      `<button type="button" class="primary" id="signPdfFullscreenBtn">✍️ ${isHandover ? 'Подписать выдачу (во весь экран)' : 'Подписать приёмку (во весь экран)'}</button>` +
+      `<button type="button" class="soft" id="printPdfActBtn">🖨 Сохранить в PDF / Печать</button>` +
+      `<button type="button" class="ghost small" id="sharePdfActBtn">📤 Поделиться</button>` +
+      `<button type="button" class="ghost small" id="switchPdfTypeBtn">${isHandover ? 'К Акту приёма' : 'К Акту выдачи'}</button>` +
+    `</div>` +
+    `<div class="pdf-preview-container section">${actHtml}</div>`
+  );
+
+  dialog.querySelector('#signPdfFullscreenBtn').onclick = () => {
+    dialog.close();
+    openSignaturePadModal(devId, docType, true);
+  };
+
+  dialog.querySelector('#switchPdfTypeBtn').onclick = () => {
+    dialog.close();
+    repairPdfModal(devId, isHandover ? 'intake' : 'handover');
+  };
+
+  dialog.querySelector('#printPdfActBtn').onclick = () => {
+    let printRoot = document.getElementById('dedicatedPrintRoot');
+    if (!printRoot) {
+      printRoot = document.createElement('div');
+      printRoot.id = 'dedicatedPrintRoot';
+      document.body.appendChild(printRoot);
+    }
+    printRoot.innerHTML = actHtml;
+    window.print();
+  };
+
+  dialog.querySelector('#sharePdfActBtn').onclick = async () => {
+    const fileName = `act-${docType}-${dev.orderNum || dev.id}.html`;
+    const standaloneHtml = `<!doctype html><html lang="ru"><head><meta charset="utf-8"><title>Акт №${dev.orderNum || ''}</title><style>body{font-family:Arial,sans-serif;padding:24px;color:#111;max-width:800px;margin:0 auto}table{width:100%;border-collapse:collapse;margin:14px 0}th,td{border:1px solid #333;padding:8px 10px;text-align:left;font-size:13px}.pdf-offer-box{border:1px solid #555;padding:10px 14px;margin:14px 0;font-size:12px}.pdf-signatures{display:flex;justify-content:space-between;gap:24px;margin-top:28px}.pdf-sig-line{border-bottom:1px solid #111;padding:10px 0 4px;margin-bottom:4px;min-height:48px;display:flex;align-items:center;gap:12px}.pdf-sig-img{max-height:56px;width:auto}</style></head><body>${actHtml}</body></html>`;
+    try {
+      if (await nativeApkShareFile(fileName, standaloneHtml)) {
+        toast('Документ готов к отправке');
+        return;
+      }
+    } catch {}
+    download(fileName, standaloneHtml);
+  };
+}
+
 function demoState() {
   const s = initialState(), day = today();
   s.accounts = [
@@ -2482,13 +3768,61 @@ function demoState() {
   s.debts = [{ id: 'd1', name: 'Алексей', direction: 'owed', opening: 500000, due: '', note: 'Вернёт в конце недели', schedule: [], schedulePaidBase: 0 }];
   s.budget = { income: 11000000, savings: 1500000, nextIncome: day.slice(0, 7) + '-25', incomeMode: 'courier', caps: { food: 2200000, joy: 1000000, transport: 600000, home: 1200000 } };
   s.plans = [{ id: 'pl1', name: 'Аренда жилья', amount: 2800000, date: day, categoryId: 'home', paidTransactionId: null, status: 'pending' }];
+  s.repair.clients = [{
+    id: 'cl-1',
+    name: 'Дмитрий Волков',
+    phones: [
+      { number: '+7 999 123-45-67', label: 'Основной', active: true },
+      { number: '+7 920 555-88-99', label: 'Рабочий', active: false }
+    ],
+    note: 'ул. Ленина 15, кв. 42',
+    createdAt: Date.now() - 86400000
+  }];
+  s.repair.devices = [{
+    id: 'dev-1',
+    orderNum: 101,
+    clientId: 'cl-1',
+    title: 'Смартфон Samsung Galaxy S23 / ASUS TUF F15',
+    conditions: ['Потёртости', 'Разбит экран'],
+    conditionCustom: '',
+    accessories: ['Чехол', 'SIM-карта'],
+    accessoriesCustom: '',
+    authType: 'pattern',
+    authPattern: '1-4-7-8-9',
+    prepayment: 100000,
+    serialOrAppearance: 'Потёртости, Разбит экран',
+    issue: 'Выключается под нагрузкой, сильно шумит кулер',
+    status: 'diagnostics',
+    fieldVisitDate: '',
+    fieldVisitTime: '',
+    fieldVisitAddress: '',
+    diagnosis: 'Забит радиатор охлаждения, высохла термопаста, требуется замена вентилятора CPU',
+    promisedDate: addDays(day, 2),
+    promisedTime: '18:00',
+    services: [
+      { id: 's1', name: 'Диагностика устройства', price: 50000 },
+      { id: 's2', name: 'Чистка охлаждения и замена термопасты', price: 150000 }
+    ],
+    partsCost: 85000,
+    partsClientPrice: 140000,
+    totalPrice: 340000,
+    callReminderDate: day,
+    callReminderTime: '14:00',
+    callReminderNote: 'Согласовать заказ нового кулера',
+    postponeReason: 'parts',
+    postponeNote: 'Ждём доставку кулера CPU до четверга',
+    warranty: '90 дней',
+    createdAt: Date.now() - 86400000,
+    archivedAt: null,
+    paidTransactionId: null
+  }];
   return validateState(s);
 }
 
 // === ROUTER & RENDER ===
 
 const viewTitles = {
-  home: 'Обзор', transactions: 'Операции', courier: 'Доставка', accounts: 'Счета и долги', more: 'Ещё',
+  home: 'Обзор', transactions: 'Операции', courier: 'Работа: курьерка и ремонт', accounts: 'Счета и долги', more: 'Ещё',
   budget: 'Бюджет и лимиты', reports: 'Отчёты и разбор', settings: 'Настройки', categories: 'Категории',
   quick: 'Быстрые операции', recurring: 'Регулярные платежи', earnings: 'Календарь денег',
   purchases: 'Платежи и регулярные', forecast: 'Прогноз на 30 дней', monthly: 'Итог месяца'
@@ -2516,9 +3850,9 @@ function render() {
     : '';
 
   app.innerHTML = `<div class="shell">` +
-    `<aside class="sidebar"><div class="brand"><span class="brandmark">₽</span>Финансист</div><nav class="nav">${nav}</nav><div class="sidebar-note"><span class="statusdot"></span>Локальная база + IndexedDB<br><span class="version">Финансист 3.2 · Android 2026</span></div></aside>` +
+    `<aside class="sidebar"><div class="brand"><span class="brandmark">₽</span>Финансист</div><nav class="nav">${nav}</nav><div class="sidebar-note"><span class="statusdot"></span>Локальная база + IndexedDB<br><span class="version">Финансист 3.4 · Android 2026</span></div></aside>` +
     `<main class="main">` +
-      `<div class="mobile-brand"><span class="actions"><span class="brandmark">₽</span>Финансист</span><span class="pill ${activeShifts.length ? 'essential' : ''}">${activeShifts.length ? '🟢 В смене' : '3.2'}</span></div>` +
+      `<div class="mobile-brand"><span class="actions"><span class="brandmark">₽</span>Финансист</span><span class="pill ${activeShifts.length ? 'essential' : ''}">${activeShifts.length ? '🟢 В смене' : '3.4'}</span></div>` +
       `<div class="topline"><div><h1>${viewTitles[view] || 'Обзор'}</h1></div>${topRightHtml}</div>` +
       `${storageError ? `<div class="note negative">${esc(storageError)}</div>` : ''}` +
       `${content}` +
@@ -2543,10 +3877,29 @@ setTimeout(() => { checkStartupPaymentAlerts(); syncNativeNotifications(false); 
     try { action(b.dataset.action, b.dataset.id); } catch (e) { toast(e.message); }
   });
 
+  const delivAcc = app.querySelector('#deliveryWorkAccordion');
+  if (delivAcc) {
+    delivAcc.addEventListener('toggle', () => {
+      deliveryForceOpen = delivAcc.open;
+    });
+  }
+
+  const liveRepSearch = app.querySelector('#liveRepairSearch');
+  if (liveRepSearch) {
+    liveRepSearch.oninput = e => {
+      repairSearch = e.target.value;
+      const pos = e.target.selectionStart;
+      render();
+      const nextInput = app.querySelector('#liveRepairSearch');
+      if (nextInput) { nextInput.focus(); nextInput.setSelectionRange(pos, pos); }
+    };
+  }
+
   const liveSearch = app.querySelector('#liveTxSearch');
   if (liveSearch) {
     liveSearch.oninput = e => {
       filters.search = e.target.value;
+      txPage = 1;
       const pos = e.target.selectionStart;
       render();
 setTimeout(() => { checkStartupPaymentAlerts(); syncNativeNotifications(false); }, 600);
@@ -2556,6 +3909,7 @@ setTimeout(() => { checkStartupPaymentAlerts(); syncNativeNotifications(false); 
   }
   app.querySelectorAll('[data-tx-group]').forEach(b => b.onclick = () => {
     filters.typeGroup = b.dataset.txGroup;
+    txPage = 1;
     render();
 setTimeout(() => { checkStartupPaymentAlerts(); syncNativeNotifications(false); }, 600);
   });
@@ -2747,7 +4101,8 @@ function action(name, id) {
       return;
     }
     case 'openFilters': return filterModal();
-    case 'resetFilters': filters = { from: '', to: '', category: '', importance: '', search: '', typeGroup: '' }; render(); return;
+    case 'resetFilters': filters = { from: '', to: '', category: '', importance: '', search: '', typeGroup: '' }; txPage = 1; render(); return;
+    case 'txPageMove': txPage = Math.max(1, txPage + Number(id)); render(); window.scrollTo(0, 0); return;
     case 'addAccount':
     case 'editAccount': return accountModal(state.accounts.find(a => a.id === id));
     case 'addCategory': return categoryModal(null, id || null);
@@ -2831,6 +4186,18 @@ function action(name, id) {
     case 'toggleLunch': return toggleLunchTimer(id);
     case 'fuelSettings': return fuelSettingsModal();
     case 'shiftOdoModal': return shiftOdoModal(id);
+    case 'setRepairTab': repairTab = id; render(); return;
+    case 'newRepairClient': return repairClientModal(null);
+    case 'editRepairClient': return repairClientModal((state.repair?.clients || []).find(c => c.id === id));
+    case 'selectActivePhone': { const [cId, idx] = id.split('|'); return selectActivePhone(cId, idx); }
+    case 'newRepairDevice': return repairDeviceModal(null, null, 'intake');
+    case 'addRepairForClient': return repairDeviceModal(null, id, 'intake');
+    case 'editRepairDevice': { const [dId, win] = id.split('|'); return repairDeviceModal(dId, null, win || 'intake'); }
+    case 'handoverRepairModal': return handoverRepairModal(id);
+    case 'repairSettingsModal': return repairSettingsModal();
+    case 'repairPdfModal': { const [dId, tp] = id.split('|'); return repairPdfModal(dId, tp || 'intake'); }
+    case 'signDeviceModal': { const [dId, tp] = id.split('|'); return openSignaturePadModal(dId, tp || 'intake', true); }
+    case 'copyRepairStatus': return copyRepairClientStatus(id);
     case 'shiftExpense': return shiftExpenseModal(id);
     case 'quickAddDelivery': return quickAddDelivery(id, false);
     case 'quickAddNoAmount': return quickAddDelivery(id, true);
@@ -2898,6 +4265,8 @@ setTimeout(() => { checkStartupPaymentAlerts(); syncNativeNotifications(false); 
     }
     case 'setTheme': mutate(s => s.appearance.theme = id); return;
     case 'backup': return download('financier-backup-' + today() + '.json', state);
+    case 'backupModule': return downloadModuleBackup(id || 'all');
+    case 'shareModuleBackup': return shareModuleBackup(id || 'all');
     case 'shareBackup': return shareBackup();
     case 'backupText': return backupTextModal();
     case 'restore': return restoreModal();
@@ -3083,3 +4452,200 @@ setInterval(() => {
     }
   }
 }, 1000);
+
+
+function renderClientPhonesBar(client) {
+  if (!client || !client.phones?.length) return '<span class="muted">Нет телефона</span>';
+  const activePhone = getClientActivePhone(client);
+  const telHref = normalizePhoneHref(activePhone.number);
+  const phoneChips = client.phones.map((p, idx) =>
+    `<button type="button" class="phone-chip ${p.active || p === activePhone ? 'active' : ''}" data-action="selectActivePhone" data-id="${esc(client.id + '|' + idx)}" title="Сделать номер активным">` +
+      `${p.active || p === activePhone ? '★ ' : ''}${esc(p.number)}${p.label ? ` <small>(${esc(p.label)})</small>` : ''}` +
+    `</button>`
+  ).join('');
+  return `<div class="client-phones-bar">` +
+    `<div class="phone-chips-wrap">${phoneChips}</div>` +
+    (telHref ? `<a class="call-dial-btn" href="tel:${esc(telHref)}" onclick="event.stopPropagation()">📞 Позвонить</a>` : '') +
+  `</div>`;
+}
+
+function renderRepairDeviceCard(dev) {
+  const client = (state.repair?.clients || []).find(c => c.id === dev.clientId);
+  const activePhone = getClientActivePhone(client);
+  const telHref = normalizePhoneHref(activePhone.number);
+  const tot = repairDeviceTotals(dev);
+  const stLabel = REPAIR_STATUSES[dev.status] || 'В работе';
+  const statusTone = dev.status === 'ready' ? 'essential' : dev.status === 'waiting_parts' || dev.status === 'waiting_client' ? 'expected-text' : '';
+
+  const badges = [];
+  if (dev.fieldVisitDate) badges.push(`🚗 Выезд: ${date(dev.fieldVisitDate)}${dev.fieldVisitTime ? ' ' + dev.fieldVisitTime : ''}`);
+  if (dev.promisedDate) badges.push(`📅 Выдача: ${date(dev.promisedDate)}${dev.promisedTime ? ' ' + dev.promisedTime : ''}`);
+  if (dev.callReminderDate) badges.push(`📞 Прозвон: ${date(dev.callReminderDate)}${dev.callReminderTime ? ' ' + dev.callReminderTime : ''}`);
+  if (dev.postponeReason && POSTPONE_REASONS[dev.postponeReason]) badges.push(POSTPONE_REASONS[dev.postponeReason]);
+  if (dev.warranty && dev.status === 'archived') badges.push(`🛡 Гарантия: ${dev.warranty}`);
+
+  return `<div class="repair-card ${dev.status === 'archived' ? 'repair-archived' : ''}">` +
+    `<div class="repair-card-top">` +
+      `<div class="repair-card-main">` +
+        `<div class="row-title">` +
+          `<span class="pill">#${esc(dev.orderNum || '—')}</span>` +
+          `<b>${esc(dev.title)}</b>` +
+          `<span class="pill ${statusTone}">${esc(stLabel)}</span>` +
+        `</div>` +
+        `<div class="row-meta">` +
+          `👤 <b>${esc(client?.name || 'Без клиента')}</b>` +
+          `${activePhone.number ? ` · ${esc(activePhone.number)}` : ''}` +
+          `${client?.phones?.length > 1 ? ` (+ещё ${client.phones.length - 1} ном.)` : ''}` +
+        `</div>` +
+      `</div>` +
+      `<div class="repair-card-price">` +
+        `<b class="amount ${tot.totalPrice > 0 ? 'positive' : 'muted'}">${tot.totalPrice > 0 ? rub(tot.totalPrice) : 'Оценка…'}</b>` +
+        `${tot.partsCost > 0 ? `<small class="muted">Чистыми: ${rub(tot.netProfit)}</small>` : ''}` +
+      `</div>` +
+    `</div>` +
+
+    `<div class="repair-card-details">` +
+      `<div><span class="muted">Проблема:</span> ${esc(dev.issue || 'не указана')}</div>` +
+      `<div><span class="muted">Состояние:</span> ${esc(formatDeviceConditionSummary(dev))} · <span class="muted">Комплект:</span> ${esc(formatDeviceAccessoriesSummary(dev))}</div>` +
+      `${dev.authType === 'pattern' && dev.authPattern ? `<div><span class="muted">Граф. ключ:</span> <b>${esc(dev.authPattern.replace(/-/g, ' → '))}</b></div>` : dev.authType === 'pass' && dev.authValue ? `<div><span class="muted">Пароль:</span> <b>${esc(dev.authValue)}</b></div>` : ''}` +
+      `${dev.diagnosis ? `<div><span class="muted">Диагноз:</span> <b>${esc(dev.diagnosis)}</b></div>` : ''}` +
+      `${tot.prepayment > 0 ? `<div><span class="muted">Аванс:</span> <b>${rub(tot.prepayment)}</b> · К доплате: <b class="expected-text">${rub(tot.remainingToPay)}</b></div>` : ''}` +
+      `${dev.postponeNote ? `<div><span class="expected-text">Примечание переноса:</span> ${esc(dev.postponeNote)}</div>` : ''}` +
+      `${badges.length ? `<div class="repair-badges-row">${badges.map(b => `<span class="pill">${esc(b)}</span>`).join('')}</div>` : ''}` +
+    `</div>` +
+
+    (client ? renderClientPhonesBar(client) : '') +
+
+    `<div class="actions repair-card-actions">` +
+      `${btn('editRepairDevice', '⚙ Опросник', dev.id + '|intake', 'small primary')}` +
+      `${btn('editRepairDevice', '🔍 Диагноз и прайс', dev.id + '|diag', 'small soft')}` +
+      `${btn('signDeviceModal', '✍️ Подпись', dev.id + '|' + (dev.status === 'ready' || dev.status === 'archived' ? 'handover' : 'intake'), 'small soft')}` +
+      `${btn('copyRepairStatus', '📋 Статус клиенту', dev.id, 'small ghost')}` +
+      `${btn('repairPdfModal', '📄 PDF Приём', dev.id + '|intake', 'small ghost')}` +
+      `${btn('repairPdfModal', '📄 PDF Выдача', dev.id + '|handover', 'small ghost')}` +
+      `${dev.status !== 'archived' ? btn('handoverRepairModal', '✅ Выдать', dev.id, 'small soft') : ''}` +
+    `</div>` +
+  `</div>`;
+}
+
+function courierView() {
+  const activeShifts = state.courierShifts.filter(x => x.startedAt && !x.endedAt);
+  const isDeliveryOpen = activeShifts.length > 0 || deliveryForceOpen;
+  let activeCleanSum = 0;
+  if (activeShifts.length) {
+    const x = activeShifts[0], t = shiftTotals(state, x), exp = shiftExpensesTotal(x);
+    activeCleanSum = t.net - exp - (t.fuelCost || 0);
+  }
+
+  const rep = state.repair || { clients: [], devices: [], priceList: [] };
+  const q = repairSearch.trim().toLowerCase();
+  const qDigits = q.replace(/[^0-9]/g, '');
+
+  const matchClient = (c) => {
+    if (!q) return true;
+    const nameHit = (c.name || '').toLowerCase().includes(q) || (c.note || '').toLowerCase().includes(q);
+    const phoneHit = (c.phones || []).some(p => p.number.toLowerCase().includes(q) || (qDigits && p.number.replace(/[^0-9]/g, '').includes(qDigits)));
+    return nameHit || phoneHit;
+  };
+
+  const matchDevice = (d) => {
+    if (!q) return true;
+    const c = rep.clients.find(cl => cl.id === d.clientId);
+    if (c && matchClient(c)) return true;
+    return [d.title, d.issue, d.diagnosis, d.serialOrAppearance, String(d.orderNum || '')].join(' ').toLowerCase().includes(q);
+  };
+
+  const activeDevices = rep.devices.filter(d => d.status !== 'archived' && matchDevice(d)).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  const callDevices = rep.devices.filter(d => d.status !== 'archived' && (d.callReminderDate || d.postponeReason) && matchDevice(d)).sort((a, b) => (a.callReminderDate || '9999').localeCompare(b.callReminderDate || '9999'));
+  const archivedDevices = rep.devices.filter(d => d.status === 'archived' && matchDevice(d)).sort((a, b) => (b.archivedAt || b.createdAt || 0) - (a.archivedAt || a.createdAt || 0));
+  const filteredClients = rep.clients.filter(matchClient).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+
+  const clientCardsHtml = filteredClients.map(c => {
+    const cDevs = rep.devices.filter(d => d.clientId === c.id);
+    const activeCount = cDevs.filter(d => d.status !== 'archived').length;
+    const archCount = cDevs.filter(d => d.status === 'archived').length;
+    return `<div class="repair-card">` +
+      `<div class="repair-card-top">` +
+        `<div class="repair-card-main">` +
+          `<div class="row-title"><b>👤 ${esc(c.name)}</b> <span class="pill">В работе: ${activeCount} · Архив: ${archCount}</span></div>` +
+          `${c.note ? `<div class="row-meta">${esc(c.note)}</div>` : ''}` +
+        `</div>` +
+        `<div class="actions">` +
+          `${btn('addRepairForClient', '+ Устройство', c.id, 'small primary')}` +
+          `${btn('editRepairClient', '✎ Профиль', c.id, 'small ghost')}` +
+        `</div>` +
+      `</div>` +
+      `${renderClientPhonesBar(c)}` +
+      (cDevs.length
+        ? `<details class="history-spoiler" ${activeCount > 0 ? 'open' : ''}><summary>Устройства клиента (${cDevs.length})</summary><div class="spoiler-items">` +
+            cDevs.map(d =>
+              `<div class="row wrap-row">` +
+                `<div class="row-main">` +
+                  `<b>#${esc(d.orderNum || '—')} ${esc(d.title)} <span class="pill">${esc(REPAIR_STATUSES[d.status] || d.status)}</span></b>` +
+                  `<small>Причина: ${esc(d.issue || '—')}${d.diagnosis ? ` · Диагноз: <b>${esc(d.diagnosis)}</b>` : ''}${d.warranty ? ` · Гарантия: ${esc(d.warranty)}` : ''}</small>` +
+                `</div>` +
+                `<div class="actions">` +
+                  `${btn('editRepairDevice', 'Открыть', d.id + '|intake', 'small soft')}` +
+                  `${btn('repairPdfModal', '📄 PDF', d.id + '|' + (d.status === 'archived' || d.status === 'ready' ? 'handover' : 'intake'), 'small ghost')}` +
+                `</div>` +
+              `</div>`
+            ).join('') +
+          `</div></details>`
+        : '<p class="muted">Устройств пока нет</p>') +
+    `</div>`;
+  }).join('');
+
+  return (
+    `<details class="work-accordion ${activeShifts.length ? 'work-accordion-active' : ''}" id="deliveryWorkAccordion" ${isDeliveryOpen ? 'open' : ''}>` +
+      `<summary class="work-accordion-summary">` +
+        `<div class="work-acc-title">` +
+          `<span class="service-badge x5">🛵</span>` +
+          `<div>` +
+            `<h2>Курьерка и доставка</h2>` +
+            `<small class="muted">${activeShifts.length ? `🟢 Смена активна · чистыми ${rub(activeCleanSum)}` : 'Свёрнуто · нажми, чтобы начать смену или сверить расчётку'}</small>` +
+          `</div>` +
+        `</div>` +
+        `<span class="pill ${activeShifts.length ? 'essential' : ''}">${activeShifts.length ? 'На линии' : 'Раскрыть ▾'}</span>` +
+      `</summary>` +
+      `<div class="work-accordion-body">${deliverySectionHtml()}</div>` +
+    `</details>` +
+
+    `<section class="flat-section repair-hub-section">` +
+      `<div class="section-title">` +
+        `<div class="work-acc-title">` +
+          `<span class="service-badge repair-badge">🛠</span>` +
+          `<div>` +
+            `<h2>Ремонт техники и клиенты</h2>` +
+            `<p class="muted">Приёмка по номеру телефона, прайс-лист, прозвоны, архив диагнозов и PDF-акты с гарантией</p>` +
+          `</div>` +
+        `</div>` +
+        `<div class="actions">` +
+          `${btn('newRepairDevice', '+ Принять устройство', '', 'primary')}` +
+          `${btn('newRepairClient', '+ Клиент', '', 'soft')}` +
+          `${btn('repairSettingsModal', '📋 Прайс и оферта', '', 'ghost')}` +
+        `</div>` +
+      `</div>` +
+
+      `<div class="tx-quick-bar">` +
+        `<input type="search" id="liveRepairSearch" value="${esc(repairSearch)}" placeholder="🔍 Поиск по номеру телефона, ФИО клиента, модели или диагнозу…">` +
+      `</div>` +
+
+      `<div class="segmented">` +
+        `${btn('setRepairTab', `В работе (${activeDevices.length})`, 'active', repairTab === 'active' ? 'primary' : 'ghost')}` +
+        `${btn('setRepairTab', `Прозвон и переносы (${callDevices.length})`, 'calls', repairTab === 'calls' ? 'primary' : 'ghost')}` +
+        `${btn('setRepairTab', `Клиенты (${filteredClients.length})`, 'clients', repairTab === 'clients' ? 'primary' : 'ghost')}` +
+        `${btn('setRepairTab', `Архив выданных (${archivedDevices.length})`, 'archive', repairTab === 'archive' ? 'primary' : 'ghost')}` +
+      `</div>` +
+
+      `<div class="repair-list-stack">` +
+        (repairTab === 'active'
+          ? (activeDevices.map(renderRepairDeviceCard).join('') || '<p class="muted empty-line">Нет активных ремонтов. Нажми «+ Принять устройство», чтобы оформить заказ.</p>')
+          : repairTab === 'calls'
+          ? (callDevices.map(renderRepairDeviceCard).join('') || '<p class="muted empty-line">Нет заказов, ожидающих прозвона или запчастей.</p>')
+          : repairTab === 'clients'
+          ? (clientCardsHtml || '<p class="muted empty-line">Клиентов пока нет. Нажми «+ Клиент» или создай его сразу при приёме техники.</p>')
+          : singleLatestList(archivedDevices.map(renderRepairDeviceCard), '<p class="muted empty-line">В архиве выданных устройств пока пусто.</p>', 'Показать ранее выданные устройства')) +
+      `</div>` +
+    `</section>`
+  );
+}

@@ -158,6 +158,31 @@ export function migrateState(s) {
   s.notifications.sameDay ??= true;
   s.notifications.overdueNextDay ??= true;
   s.notifications.hour ??= 10;
+    s.repair ??= {
+      masterName: 'Частный мастер / Сервис',
+      masterPhone: '',
+      intakeOfferText: '1. Устройство принимается на диагностику и ремонт со слов заказчика (возможны скрытые дефекты).\n2. Исполнитель не несёт ответственности за сохранность данных, SIM-карт и карт памяти, оставленных в устройстве.\n3. При отказе от ремонта после диагностики заказчик оплачивает стоимость диагностики согласно прайс-листу.\n4. Срок бесплатного хранения готового устройства — 14 дней с момента оповещения заказчика.',
+      handoverOfferText: '1. Гарантия распространяется исключительно на выполненные работы и заменённые запчасти, указанные в акте.\n2. Гарантия не распространяется на аппараты со следами влаги, падений, скачков напряжения и вмешательства третьих лиц.\n3. Устройство проверено заказчиком при получении в полном объёме, претензий к работе, внешнему виду и комплектации нет.',
+      priceList: [
+        { id: 'pr-diag', name: 'Диагностика устройства', price: 50000 },
+        { id: 'pr-clean', name: 'Чистка охлаждения и замена термопасты', price: 150000 },
+        { id: 'pr-os', name: 'Установка / настройка ОС и драйверов', price: 150000 },
+        { id: 'pr-port', name: 'Замена разъёма / восстановление цепей питания', price: 180000 },
+        { id: 'pr-screen', name: 'Замена дисплейного модуля / экрана', price: 200000 },
+        { id: 'pr-visit', name: 'Выезд мастера на адрес', price: 50000 }
+      ],
+      clients: [],
+      devices: [],
+      nextOrderNum: 101
+    };
+    s.repair.masterName ??= 'Частный мастер / Сервис';
+    s.repair.masterPhone ??= '';
+    s.repair.intakeOfferText ??= '1. Устройство принимается на диагностику и ремонт со слов заказчика.\n2. Исполнитель не несёт ответственности за сохранность данных.';
+    s.repair.handoverOfferText ??= '1. Гарантия действует на выполненные работы и установленные запчасти.\n2. Устройство проверено заказчиком при выдаче, претензий нет.';
+    s.repair.priceList ??= [];
+    s.repair.clients ??= [];
+    s.repair.devices ??= [];
+    s.repair.nextOrderNum ??= 101;
 
   if (!s.v12Installed) {
     for (const c of s.categories) c.kind ??= 'expense';
@@ -189,6 +214,14 @@ export function migrateState(s) {
     }
   }
 
+  if (s.incomeDefaults && !s.incomeDefaults.repair) {
+    const workParent = s.categories.find(c => c.kind === 'income' && !c.parentId && c.working)?.id || null;
+    const repId = 'inc-repair';
+    if (!s.categories.some(c => c.id === repId)) {
+      s.categories.push({ id: repId, name: 'Ремонт техники', parentId: workParent, kind: 'income', working: true, color: '#3b82f6' });
+    }
+    s.incomeDefaults.repair = repId;
+  }
   return syncRecurring(s);
 }
 
@@ -784,6 +817,156 @@ export function validateState(s) {
 }
 
 
+export const REPAIR_STATUSES = {
+  intake: 'Принят',
+  diagnostics: 'В ремонте',
+  waiting_parts: 'Ждёт запчасти',
+  waiting_client: 'Клиент думает',
+  ready: 'Готов к выдаче',
+  archived: 'Выдан (архив)'
+};
+
+export const POSTPONE_REASONS = {
+  '': 'Без переноса',
+  parts: '⏳ Ожидание запчастей',
+  client_thinking: '🤔 Заказчик не определился',
+  client_request: '📅 Просьба заказчика',
+  other: '🔧 Сложная диагностика / иное'
+};
+
+export function getClientActivePhone(client) {
+  if (!client || !Array.isArray(client.phones) || !client.phones.length) return { number: '', label: 'Основной', active: true };
+  return client.phones.find(p => p.active) || client.phones[0];
+}
+
+export function normalizePhoneHref(raw) {
+  const cleaned = String(raw || '').replace(/[^0-9+]/g, '');
+  if (!cleaned) return '';
+  if (cleaned.startsWith('8') && cleaned.length === 11) return '+7' + cleaned.slice(1);
+  if (!cleaned.startsWith('+') && cleaned.length >= 10) return '+' + cleaned;
+  return cleaned;
+}
+
+export const DEVICE_CONDITIONS = [
+  'Разбит экран',
+  'Потёртости',
+  'Сколы корпуса',
+  'Не включается',
+  'Следы влаги / вскрытия'
+];
+
+export const DEVICE_ACCESSORIES = [
+  'Чехол',
+  'SIM-карта',
+  'Карта памяти (SD)',
+  'Зарядное / кабель',
+  'Все вложения / коробка'
+];
+
+export const DEVICE_AUTH_TYPES = {
+  none: 'Нет пароля',
+  pass: 'Пароль / Пин',
+  pattern: 'Графический ключ',
+  unknown: 'Не знает / Не дал'
+};
+
+export function formatDeviceConditionSummary(dev) {
+  const parts = [];
+  if (Array.isArray(dev?.conditions) && dev.conditions.length) parts.push(dev.conditions.join(', '));
+  if (dev?.conditionCustom) parts.push(dev.conditionCustom);
+  if (!parts.length && dev?.serialOrAppearance) parts.push(dev.serialOrAppearance);
+  return parts.join(' · ') || 'Потёртости б/у';
+}
+
+export function formatDeviceAccessoriesSummary(dev) {
+  const parts = [];
+  if (Array.isArray(dev?.accessories) && dev.accessories.length) parts.push(dev.accessories.join(', '));
+  if (dev?.accessoriesCustom) parts.push(dev.accessoriesCustom);
+  return parts.join(', ') || 'Без аксессуаров (только устройство)';
+}
+
+export function repairDeviceTotals(dev) {
+  const servicesSum = (dev?.services || []).reduce((n, s) => n + (Number(s.price) || 0), 0);
+  const partsCost = Number(dev?.partsCost) || 0;
+  const partsClientPrice = Number(dev?.partsClientPrice) || 0;
+  const prepayment = Number(dev?.prepayment) || 0;
+  const computedTotal = servicesSum + partsClientPrice;
+  const totalPrice = (dev?.totalPrice !== null && dev?.totalPrice !== undefined && Number(dev.totalPrice) > 0)
+    ? Number(dev.totalPrice)
+    : computedTotal;
+  const remainingToPay = Math.max(0, totalPrice - prepayment);
+  const netProfit = totalPrice - partsCost;
+  return { servicesSum, partsCost, partsClientPrice, totalPrice, prepayment, remainingToPay, netProfit };
+}
+
+export function exportModulePayload(s, mod = 'all') {
+  if (mod === 'finance') {
+    return {
+      version: 1,
+      module: 'finance',
+      exportedAt: new Date().toISOString(),
+      accounts: s.accounts,
+      categories: s.categories,
+      incomeDefaults: s.incomeDefaults,
+       v12Installed: s.v12Installed,
+      transactions: s.transactions,
+      debts: s.debts,
+      goals: s.goals,
+      plans: s.plans,
+      quickActions: s.quickActions,
+      recurringPayments: s.recurringPayments,
+      completedMonths: s.completedMonths,
+      appearance: s.appearance,
+      budget: s.budget,
+      notifications: s.notifications
+    };
+  }
+  if (mod === 'courier') {
+    return {
+      version: 1,
+      module: 'courier',
+      exportedAt: new Date().toISOString(),
+      courier: s.courier,
+      courierShifts: s.courierShifts,
+      courierStatements: s.courierStatements
+    };
+  }
+  if (mod === 'repair') {
+    return {
+      version: 1,
+      module: 'repair',
+      exportedAt: new Date().toISOString(),
+      repair: s.repair
+    };
+  }
+  return { ...s, module: 'all', exportedAt: new Date().toISOString() };
+}
+
+export function mergeModulePayload(currentState, payload) {
+  if (!payload || typeof payload !== 'object') throw Error('Некорректный формат резервной копии');
+  if (!payload.module || payload.module === 'all') {
+    return validateState(structuredClone(payload));
+  }
+  const next = structuredClone(currentState || initialState());
+  if (payload.module === 'finance') {
+    for (const k of ['accounts', 'categories', 'incomeDefaults', 'v12Installed', 'transactions', 'debts', 'goals', 'plans', 'quickActions', 'recurringPayments', 'completedMonths', 'appearance', 'budget', 'notifications']) {
+      if (payload[k] !== undefined) next[k] = structuredClone(payload[k]);
+    }
+    return validateState(next);
+  }
+  if (payload.module === 'courier') {
+    if (payload.courier) next.courier = structuredClone(payload.courier);
+    if (Array.isArray(payload.courierShifts)) next.courierShifts = structuredClone(payload.courierShifts);
+    if (Array.isArray(payload.courierStatements)) next.courierStatements = structuredClone(payload.courierStatements);
+    return validateState(next);
+  }
+  if (payload.module === 'repair') {
+    if (payload.repair) next.repair = structuredClone(payload.repair);
+    return validateState(next);
+  }
+  throw Error('Неизвестный модуль резервной копии: ' + payload.module);
+}
+
 export function duePaymentNotifications(s, refDate = today()) {
   const cfg = s.notifications || { enabled: true, dayBefore: true, sameDay: true, overdueNextDay: true, hour: 10 };
   const tomorrow = addDays(refDate, 1);
@@ -819,6 +1002,48 @@ export function duePaymentNotifications(s, refDate = today()) {
         amount: p.amount,
         title: '🔔 Завтра платёж: ' + p.name,
         body: `Завтра (${p.date}) запланирован платёж «${p.name}» на сумму ${rub(p.amount)}.`
+      });
+    }
+  }
+
+  // Also include Repair alerts: Call reminders, Field visits, Promised handover dates
+  for (const dev of (s.repair?.devices || [])) {
+    if (dev.status === 'archived') continue;
+    const client = (s.repair?.clients || []).find(c => c.id === dev.clientId);
+    const clientName = client?.name || 'Клиент';
+    const activePhone = getClientActivePhone(client).number;
+
+    if (dev.callReminderDate && dev.callReminderDate <= tomorrow) {
+      items.push({
+        id: 'rep_call_' + dev.id + '_' + dev.callReminderDate,
+        stage: dev.callReminderDate < refDate ? 'overdue' : dev.callReminderDate === refDate ? 'today' : 'tomorrow',
+        date: dev.callReminderDate,
+        name: dev.title,
+        amount: 0,
+        title: `📞 Прозвон клиента: ${clientName} (${dev.title})`,
+        body: `${dev.callReminderNote || 'Позвонить по ремонту'}${activePhone ? ' · тел. ' + activePhone : ''}${dev.callReminderTime ? ' в ' + dev.callReminderTime : ''}`
+      });
+    }
+    if (dev.fieldVisitDate && dev.fieldVisitDate <= tomorrow) {
+      items.push({
+        id: 'rep_visit_' + dev.id + '_' + dev.fieldVisitDate,
+        stage: dev.fieldVisitDate === refDate ? 'today' : 'tomorrow',
+        date: dev.fieldVisitDate,
+        name: dev.title,
+        amount: 0,
+        title: `🚗 Выездной ремонт: ${dev.title} (${clientName})`,
+        body: `${dev.fieldVisitDate}${dev.fieldVisitTime ? ' в ' + dev.fieldVisitTime : ''}${dev.fieldVisitAddress ? ' · ' + dev.fieldVisitAddress : ''}`
+      });
+    }
+    if (dev.promisedDate && dev.promisedDate <= tomorrow) {
+      items.push({
+        id: 'rep_due_' + dev.id + '_' + dev.promisedDate,
+        stage: dev.promisedDate < refDate ? 'overdue' : dev.promisedDate === refDate ? 'today' : 'tomorrow',
+        date: dev.promisedDate,
+        name: dev.title,
+        amount: 0,
+        title: `🛠 Срок выдачи: ${dev.title} (${clientName})`,
+        body: `Обещанная дата выдачи: ${dev.promisedDate}${dev.promisedTime ? ' ' + dev.promisedTime : ''}`
       });
     }
   }
