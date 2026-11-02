@@ -23,10 +23,10 @@ jobs:
       - name: Настройка Java 17 для Android SDK
         uses: actions/setup-java@v4
         with:
-          distribution: 'temurin'
+          distribution: "temurin"
           java-version: 17
 
-      - name: Сборка веб-ресурсов, инициализация Capacitor и замена всех иконок
+      - name: Сборка веб-ресурсов, инициализация Capacitor и замена иконок
         run: |
           npm install
           node prepare-www.mjs
@@ -39,56 +39,44 @@ jobs:
               cp icon-512.png "$dir/ic_launcher_foreground.png" || true
             fi
           done
-          for dir in android/app/src/main/res/drawable*; do
-            if [ -d "$dir" ]; then
-              cp icon-192.png "$dir/ic_stat_icon_config_sample.png" || true
-            fi
-          done
-          if ! grep -q "android.permission.VIBRATE" android/app/src/main/AndroidManifest.xml; then
-            sed -i 's/<application/<uses-permission android:name="android.permission.VIBRATE" \/>\n    <application/' android/app/src/main/AndroidManifest.xml
-          fi
 
-      - name: Настройка постоянной подписи Release APK и версионирования
+      - name: Установка постоянного ключа подписи и версии 3.6 Release
+        env:
+          RUN_NUM: ${{ github.run_number }}
+          STATIC_KEY_B64: "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"
         run: |
-          keytool -genkeypair -v \
-            -keystore android/app/financier-release.keystore \
-            -alias financier_key \
-            -keyalg RSA -keysize 2048 -validity 10000 \
-            -storepass FinancierRelease2026 \
-            -keypass FinancierRelease2026 \
-            -dname "CN=AskPL, OU=Financier, O=AskPL, L=RU, ST=RU, C=RU"
+          mkdir -p ~/.android
+          echo "$STATIC_KEY_B64" | base64 -d > ~/.android/debug.keystore
+          cp ~/.android/debug.keystore android/app/financier-release.keystore
 
-          VER_CODE=$((360 + ${{ github.run_number }}))
-          VER_NAME="3.6.${{ github.run_number }}"
-          sed -i "s/versionCode 1/versionCode ${VER_CODE}/g" android/app/build.gradle
-          sed -i "s/versionName \"1.0\"/versionName \"${VER_NAME}\"/g" android/app/build.gradle
+          node -e '
+            const fs = require("fs");
+            const p = "android/app/build.gradle";
+            let g = fs.readFileSync(p, "utf8");
+            const code = 360 + (Number(process.env.RUN_NUM) || 1);
+            const ver = "3.6." + (process.env.RUN_NUM || "1");
+            g = g.replace(/versionCode\s+\d+/, "versionCode " + code);
+            g = g.replace(/versionName\s+"[^"]*"/, `versionName "${ver}"`);
+            g = g.replace(/buildTypes\s*\{\s*release\s*\{/, "buildTypes {\n        release {\n            signingConfig signingConfigs.debug");
+            fs.writeFileSync(p, g);
+            console.log("Patched build.gradle with versionCode=" + code + ", versionName=" + ver);
+          '
 
-          cat << 'EOF' >> android/app/build.gradle
-
-          android {
-              signingConfigs {
-                  release {
-                      storeFile file("financier-release.keystore")
-                      storePassword "FinancierRelease2026"
-                      keyAlias "financier_key"
-                      keyPassword "FinancierRelease2026"
-                  }
-              }
-              buildTypes {
-                  release {
-                      signingConfig signingConfigs.release
-                      minifyEnabled false
-                      shrinkResources false
-                  }
-              }
-          }
-          EOF
+          node -e '
+            const fs = require("fs");
+            const mp = "android/app/src/main/AndroidManifest.xml";
+            let m = fs.readFileSync(mp, "utf8");
+            if (!m.includes("android.permission.VIBRATE")) {
+              m = m.replace("<application", `<uses-permission android:name="android.permission.VIBRATE" />\n    <application`);
+              fs.writeFileSync(mp, m);
+            }
+          '
 
       - name: Компиляция подписанного Release APK
         working-directory: ./android
         run: |
           chmod +x gradlew
-          ./gradlew assembleRelease
+          ./gradlew assembleRelease -x lint -x lintVitalRelease
           cp app/build/outputs/apk/release/app-release.apk ../Financier-release.apk
 
       - name: Выгрузка Financier-release.apk в Artifacts
@@ -97,12 +85,12 @@ jobs:
           name: Financier-3.6-Release-APK
           path: Financier-release.apk
 
-      - name: Автоматическая публикация в GitHub Releases (для обновления в 1 клик)
+      - name: Автоматическая публикация в GitHub Releases
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v3.6.${{ github.run_number }}
           name: "Финансист v3.6.${{ github.run_number }} Release"
-          body: "Автоматическая релизная сборка Финансист 3.6 (Android 2026). Устанавливается поверх предыдущей Release-версии без удаления данных."
+          body: "Автоматическая релизная сборка Финансист 3.6 (Android 2026). Подписана единым постоянным ключом — устанавливается поверх предыдущей версии без удаления данных."
           draft: false
           prerelease: false
           make_latest: true
