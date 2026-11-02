@@ -8,6 +8,7 @@ import {
   calendarMoney, forecastMoney, monthlyMoney, planFromExpense, validateTransaction, validateState,
   duePaymentNotifications, isInstallmentDebt, personSignedBalance, personDirection,
   shiftFuelStats, lastKnownOdometer, shiftLunchState, averageOrderAmountCents,
+  ORDER_COUNT_PRESETS_CENTS, presetOrderAmountCents,
   REPAIR_STATUSES, POSTPONE_REASONS, getClientActivePhone, normalizePhoneHref, repairDeviceTotals,
   DEVICE_CONDITIONS, DEVICE_ACCESSORIES, DEVICE_AUTH_TYPES,
   formatDeviceConditionSummary, formatDeviceAccessoriesSummary,
@@ -30,7 +31,8 @@ let filters = { from: '', to: '', category: '', importance: '', search: '', type
 let period = { from: today().slice(0, 7) + '-01', to: today() };
 let installEvent = null;
 let quickOrders = 1, quickPlusMode = false;
-let drumRubles = 215, drumKopeks = 0, drumTouched = false;
+let drumRubles = 200, drumKopeks = 0, drumTouched = false;
+let workSubView = 'hub'; // 'hub' | 'delivery' | 'repair'
 let deliveryForceOpen = false, repairTab = 'active', repairSearch = '', activePrintHtml = '', txPage = 1;
 const TX_PAGE_SIZE = 30;
 let catKind = 'expense', openRootCat = null, budgetIncomeMode = 'all', purchasesTab = 'upcoming';
@@ -75,9 +77,9 @@ function singleLatestList(rowsHtmlArray, emptyHtml, spoilerLabel = 'Показа
 }
 
 function resetDrumToAverage(ordersCount = quickOrders) {
-  const avgCents = averageOrderAmountCents(state, ordersCount);
-  drumRubles = Math.floor(avgCents / 100);
-  drumKopeks = avgCents % 100;
+  const presetCents = presetOrderAmountCents(ordersCount);
+  drumRubles = Math.floor(presetCents / 100);
+  drumKopeks = presetCents % 100;
   drumTouched = false;
 }
 
@@ -564,14 +566,9 @@ function deliverySectionHtml() {
   const lastOdo = lastKnownOdometer(state);
   const nowClock = clock(Date.now());
 
-  if (!drumTouched && active.length) {
-    const avgC = averageOrderAmountCents(state, quickOrders);
-    drumRubles = Math.floor(avgC / 100);
-    drumKopeks = avgC % 100;
-  }
-
   return `<div class="courier-topbar"><div class="actions">` +
-      `${btn('navigate', '📅 Календарь денег', 'earnings', 'soft')}` +
+      `${btn('openWorkSubView', '← Назад в Работу', 'hub', 'soft')}` +
+      `${btn('navigate', '📅 Календарь денег', 'earnings', 'ghost')}` +
       `${btn('fuelSettings', `⛽ ${fuelPer100} л/100 · ${decimal(fuelPrice)} ₽/л`, '', 'ghost')}` +
       `${btn('addShift', '+ Смена за прошлую дату', '', 'ghost')}` +
       `${taxReserve(state) > 0 ? btn('payTax', 'Оплатить налог (' + rub(taxReserve(state)) + ')', '', 'ghost') : ''}` +
@@ -597,13 +594,6 @@ function deliverySectionHtml() {
       const t = shiftTotals(state, x), exp = shiftExpensesTotal(x), cleanNet = t.net - exp - (t.fuelCost || 0);
       const hrs = Math.max(0.1, t.hours || 0.1), rate = (t.earned || t.tips) ? Math.round(cleanNet / hrs) : 0, avgOrder = t.orders ? Math.round(t.earned / t.orders) : 0;
       const lunch = shiftLunchState(x);
-      const is4Plus = quickPlusMode || quickOrders >= 4;
-      const avgForCurOrders = averageOrderAmountCents(state, quickOrders);
-      const avgRubCenter = Math.floor(avgForCurOrders / 100);
-      const sliderMin = Math.max(10, Math.min(drumRubles - 40, avgRubCenter - 120));
-      const sliderMax = Math.max(drumRubles + 40, avgRubCenter + 160);
-      const prevRub = Math.max(0, drumRubles - 1), nextRub = drumRubles + 1;
-      const prevKop = (drumKopeks + 99) % 100, nextKop = (drumKopeks + 1) % 100;
 
       return `<section class="flat-section shift-cockpit" data-shift-cockpit="${esc(x.id)}">` +
         `<div class="section-title">` +
@@ -640,77 +630,16 @@ function deliverySectionHtml() {
           `<div><span>Чистый темп</span><b>${rate ? rub(rate) + '/ч' : '—'}</b><small class="muted">${t.unknown ? `Без суммы: ${t.unknown}` : 'Все суммы внесены'}</small></div>` +
         `</div>` +
 
-        `<div class="quick-trip-box">` +
-          `<div class="orders-4btn-row">` +
-            `<span class="label">Выдач в поездке:</span>` +
-            `<div class="orders-3btn-group" role="group" aria-label="Количество выдач">` +
-              `<button type="button" class="${!is4Plus && quickOrders === 1 ? 'primary' : 'ghost'}" data-quick-order="1" data-shift="${esc(x.id)}">1</button>` +
-              `<button type="button" class="${!is4Plus && quickOrders === 2 ? 'primary' : 'ghost'}" data-quick-order="2" data-shift="${esc(x.id)}">2</button>` +
-              `<button type="button" class="${!is4Plus && quickOrders === 3 ? 'primary' : 'ghost'}" data-quick-order="3" data-shift="${esc(x.id)}">3</button>` +
-              `<button type="button" class="${is4Plus ? 'primary' : 'ghost'}" data-quick-order="4+" data-shift="${esc(x.id)}">4+</button>` +
-              `<input type="number" id="customQuickOrders_${esc(x.id)}" data-no-math="true" class="custom-orders-inp" value="${is4Plus ? Math.max(4, quickOrders) : 4}" min="4" max="100" ${is4Plus ? '' : 'hidden'} aria-label="Точное число выдач">` +
-            `</div>` +
-          `</div>` +
-
-          `<div class="alarm-Display-box">` +
-            `<div class="alarm-display-header">` +
-              `<span>Точная сумма заказа (средняя для ${quickOrders} выд.: <b>${rub(avgForCurOrders)}</b>)</span>` +
-            `</div>` +
-            `<div class="alarm-main-input-wrap">` +
-              `<input type="text" inputmode="decimal" data-no-math="true" class="alarm-main-input" data-quick-amount="${esc(x.id)}" value="${esc(formatDrumString())}" placeholder="Введи сумму или крути барабан ниже">` +
-              `<span class="alarm-rub-sign">₽</span>` +
-            `</div>` +
-          `</div>` +
-
-          `<div class="alarm-drums-grid" data-drum-root="${esc(x.id)}">` +
-            `<div class="alarm-drum-col">` +
-              `<div class="alarm-drum-title">Рубли (₽)</div>` +
-              `<div class="alarm-drum-wheel" data-wheel-kind="rub" data-shift="${esc(x.id)}">` +
-                `<button type="button" class="drum-step-Neighbor" data-drum-step="rub|-1" data-shift="${esc(x.id)}">${prevRub}</button>` +
-                `<div class="drum-active-val" data-drum-rub-val="${esc(x.id)}">${drumRubles}</div>` +
-                `<button type="button" class="drum-step-Neighbor" data-drum-step="rub|1" data-shift="${esc(x.id)}">${nextRub}</button>` +
-              `</div>` +
-              `<input type="range" class="drum-slider" data-drum-rub-slider="${esc(x.id)}" min="${sliderMin}" max="${sliderMax}" value="${drumRubles}">` +
-              `<div class="drum-fine-btns">` +
-                `<button type="button" class="small ghost" data-drum-step="rub|-10" data-shift="${esc(x.id)}">−10</button>` +
-                `<button type="button" class="small ghost" data-drum-step="rub|-1" data-shift="${esc(x.id)}">−1</button>` +
-                `<button type="button" class="small ghost" data-drum-step="rub|1" data-shift="${esc(x.id)}">+1</button>` +
-                `<button type="button" class="small ghost" data-drum-step="rub|10" data-shift="${esc(x.id)}">+10</button>` +
-              `</div>` +
-            `</div>` +
-
-            `<div class="alarm-drum-sep">:</div>` +
-
-            `<div class="alarm-drum-col">` +
-              `<div class="alarm-drum-title">Копейки (коп)</div>` +
-              `<div class="alarm-drum-wheel" data-wheel-kind="kop" data-shift="${esc(x.id)}">` +
-                `<button type="button" class="drum-step-Neighbor" data-drum-step="kop|-1" data-shift="${esc(x.id)}">${String(prevKop).padStart(2, '0')}</button>` +
-                `<div class="drum-active-val" data-drum-kop-val="${esc(x.id)}">${String(drumKopeks).padStart(2, '0')}</div>` +
-                `<button type="button" class="drum-step-Neighbor" data-drum-step="kop|1" data-shift="${esc(x.id)}">${String(nextKop).padStart(2, '0')}</button>` +
-              `</div>` +
-              `<input type="range" class="drum-slider" data-drum-kop-slider="${esc(x.id)}" min="0" max="99" value="${drumKopeks}">` +
-              `<div class="drum-fine-btns">` +
-                `<button type="button" class="small ghost" data-drum-step="kop|-10" data-shift="${esc(x.id)}">−10</button>` +
-                `<button type="button" class="small ghost" data-drum-step="kop|-1" data-shift="${esc(x.id)}">−1</button>` +
-                `<button type="button" class="small ghost" data-drum-step="kop|1" data-shift="${esc(x.id)}">+1</button>` +
-                `<button type="button" class="small ghost" data-drum-step="kop|10" data-shift="${esc(x.id)}">+10</button>` +
-              `</div>` +
-            `</div>` +
-          `</div>` +
-
-          `<div class="alarm-submit-row">` +
-            `<button type="button" class="primary alarm-save-btn" data-action="quickAddDelivery" data-id="${esc(x.id)}">+ Записать поездку</button>` +
-            `<button type="button" class="ghost" data-action="quickAddNoAmount" data-id="${esc(x.id)}">Без суммы</button>` +
+        `<div class="shift-add-order-cta">` +
+          `<button type="button" class="primary big-add-order-btn" data-action="openDrumOrderModal" data-id="${esc(x.id)}">➕ + Заказ (барабанный ввод)</button>` +
+          `<div class="actions shift-quick-exp-row">` +
+            `<button type="button" class="small soft" data-action="shiftExpense" data-id="${esc(x.id)}">🍔 Продукты / Расход</button>` +
+            `<button type="button" class="small soft" data-action="shiftOdoModal" data-id="${esc(x.id)}">⛽ Бензин / Пробег</button>` +
+            `<button type="button" class="small soft" data-action="tip" data-id="${esc(x.id)}">🍵 + Чай</button>` +
+            [50, 100, 200].map(v => `<button type="button" class="small ghost" data-action="quickTip" data-id="${esc(x.id)}|${v}">+${v} ₽</button>`).join('') +
           `</div>` +
         `</div>` +
 
-        `<div class="quick-tips-bar">` +
-          `<div class="actions"><span class="label">🍵 Чай:</span>` +
-            [50, 100, 150, 200].map(v => `<button type="button" class="small soft" data-action="quickTip" data-id="${esc(x.id)}|${v}">+${v} ₽</button>`).join('') +
-            `${btn('tip', 'Свой…', x.id, 'small ghost')}` +
-          `</div>` +
-          `<div class="actions">${btn('shiftExpense', '− Расход на смене (еда / проезд)', x.id, 'small ghost')}</div>` +
-        `</div>` +
         `<div class="shift-trips-section">` +
           `<div class="cardhead"><h3>Поездки смены (${(x.entries || []).length})</h3>${(x.entries || []).length ? `<button type="button" class="small ghost" data-action="delivery" data-id="${esc(x.id)}">+ С выбором времени</button>` : ''}</div>` +
           `${deliveryList(x)}` +
@@ -755,10 +684,9 @@ function accountsView() {
   const peopleList = state.debts.filter(d => !isInstallmentDebt(d));
   const instList = state.debts.filter(d => isInstallmentDebt(d));
 
-  const peopleRows = peopleList.map(d => {
+  const peopleCards = peopleList.map(d => {
     const signed = personSignedBalance(state, d.id);
     const rem = Math.abs(signed);
-    const dir = signed > 0 ? 'owed' : signed < 0 ? 'owe' : (d.direction || 'owed');
     const statusLabel = signed > 0 ? 'Мне должен' : signed < 0 ? 'Я должен' : 'В расчёте';
     const statusCls = signed > 0 ? 'essential' : signed < 0 ? 'negative' : '';
     const txCount = state.transactions.filter(t => t.debtId === d.id).length;
@@ -773,14 +701,13 @@ function accountsView() {
         `${btn('editDebt', '✎', d.id, 'small ghost')}` +
       `</div>` +
       `<div class="actions debt-actions">` +
-        `${rem > 0 ? btn('repayDebt', dir === 'owe' ? 'Отдать долг' : 'Мне вернули', d.id, 'small primary') : ''}` +
-        `${btn('lendPerson', 'Дал в долг', d.id, 'small soft')}` +
-        `${btn('borrowPerson', 'Взял в долг', d.id, 'small ghost')}` +
+        `${btn('borrowPerson', '➕ Мне вернули / Я взял', d.id, 'small soft')}` +
+        `${btn('lendPerson', '➖ Я дал / Я вернул', d.id, 'small ghost')}` +
       `</div>` +
     `</div>`;
-  }).join('');
+  });
 
-  const instRows = instList.map(d => {
+  const instCards = instList.map(d => {
     const ps = installmentStatus(state, d), pendingInst = ps.filter(p => p.remaining);
     const txCount = state.transactions.filter(t => t.debtId === d.id).length;
     return `<div class="debt-line">` +
@@ -795,12 +722,23 @@ function accountsView() {
       `</div>` +
       `<details><summary>График платежей (${ps.length})</summary>${ps.map((p, i) => `<div class="row schedule-row"><span class="row-meta">${i + 1}</span><div class="row-main"><div class="row-title">${date(p.date)}</div><div class="row-meta">${p.remaining === 0 ? 'Оплачен' : p.paid ? 'Частично: ' + rub(p.paid) : p.date < today() ? 'Просрочен' : 'По графику'}</div></div><b>${rub(p.remaining)}</b>${p.remaining ? btn('payInstallment', 'Оплатить', d.id + '|' + p.id, 'small primary') : '<span class="positive">✓</span>'}</div>`).join('')}</details>` +
     `</div>`;
-  }).join('');
+  });
+
+  const peopleHtml = singleLatestList(
+    peopleCards,
+    '<p class="muted empty-line">Добавь человека здесь или прямо при записи операции</p>',
+    'Развернуть остальных людей'
+  );
+  const instHtml = singleLatestList(
+    instCards,
+    '<p class="muted empty-line">Добавь рассрочку с разбивкой платежей по датам</p>',
+    'Развернуть остальные рассрочки'
+  );
 
   return section('Мои счета', accRows || '<p class="muted empty-line">Добавь карту или наличные</p>', btn('addAccount', '+ Счёт', '', 'small primary')) +
     section('Цели и накопления', goalRows || '<p class="muted empty-line">Привяжи цель к накопительному счёту</p>', btn('addGoal', '+ Цель', '', 'small soft')) +
-    section('🤝 Долги (люди)', peopleRows || '<p class="muted empty-line">Добавь человека здесь или прямо при записи операции</p>', btn('addDebt', '+ Человек', '', 'small primary')) +
-    section('💳 Рассрочки и графики', instRows || '<p class="muted empty-line">Добавь рассрочку с разбивкой платежей по датам</p>', btn('addInstallment', '+ Рассрочка', '', 'small soft'));
+    section(`🤝 Долги (${peopleList.length})`, peopleHtml, btn('addDebt', '+ Человек', '', 'small primary')) +
+    section(`💳 Рассрочки (${instList.length})`, instHtml, btn('addInstallment', '+ Рассрочка', '', 'small soft'));
 }
 
 function moreView() {
@@ -1130,18 +1068,31 @@ function transactionModal(t, defaults = {}, resuming = false) {
   }
   draft = defaults._draft || null;
   if (!state.accounts.length) { toast('Сначала добавь счёт'); return accountModal(); }
+  if (defaults.type === 'debt') defaults.type = 'borrow';
   const d = {
     type: 'expense', date: today(), accountId: state.accounts[0].id,
     categoryId: state.categories.find(c => c.kind === 'expense')?.id,
     importance: 'unrated', ...defaults, ...t,
     ...(draft ? { ...draft.fields, categoryId: draft.fields.incomeCategoryId || draft.fields.categoryId } : {})
   };
+  let isDebtGroup = ['borrow', 'lend', 'repay_out', 'repay_in', 'debt'].includes(d.type);
+  let activeDebtFlow = ['lend', 'repay_out'].includes(d.type) ? 'out' : 'in'; // 'in' = Мне вернули / Я взял (+ на счёт), 'out' = Я дал / Я вернул (- со счёта)
   let items = structuredClone(draft?.items || t?.items || defaults.items || []);
   const draftFields = draft?.fields;
   const recentNotes = [...new Set(state.transactions.map(x => x.note).filter(Boolean))].slice(0, 25);
 
+  const topTypeEntries = t?.type?.startsWith('adjustment')
+    ? Object.entries(TYPES).filter(([id]) => id.startsWith('adjustment'))
+    : [
+        ['expense', 'Расход'],
+        ['income', 'Доход'],
+        ['debt', 'Долги'],
+        ['transfer', 'Перевод между счетами']
+      ];
+  const selectedTopType = isDebtGroup ? 'debt' : d.type;
+
   const fields = `<div class="formgrid">` +
-    `${field('Тип операции', `<select name="type">${Object.entries(TYPES).filter(([id]) => t?.type.startsWith('adjustment') ? id.startsWith('adjustment') : !id.startsWith('adjustment')).map(([id, n]) => option(id, n, d.type)).join('')}</select>`)}` +
+    `${field('Тип операции', `<select name="type" id="txTopTypeSelect">${topTypeEntries.map(([id, n]) => option(id, n, selectedTopType)).join('')}</select>`)}` +
     `${field('Дата', input('date', d.date, 'date', 'required'))}` +
     `${field('Счёт', `<select name="accountId">${accountOpts(d.accountId)}</select>`)}` +
     `${field('Сумма, ₽ (можно 250+180)', input('amount', draft ? draft.fields.amount : d.amount ? decimal(d.amount) : '', 'text', 'required inputmode="decimal" placeholder="Например: 450 или 300+150"'))}` +
@@ -1154,7 +1105,21 @@ function transactionModal(t, defaults = {}, resuming = false) {
     `${t ? '<button type="button" class="danger small section" id="deleteTx">Удалить операцию</button>' : ''}`;
 
   modal(t ? 'Изменить операцию' : 'Записать операцию', fields, f => {
-    const type = f.get('type');
+    let rawTopType = f.get('type');
+    let type = rawTopType;
+    if (rawTopType === 'debt' || ['borrow', 'lend', 'repay_out', 'repay_in'].includes(rawTopType)) {
+      const selDebtId = f.get('debtId');
+      const existingDebt = state.debts.find(x => x.id === selDebtId);
+      if (existingDebt && isInstallmentDebt(existingDebt)) {
+        type = 'repay_out';
+      } else if (activeDebtFlow === 'in') {
+        const curSigned = existingDebt ? personSignedBalance(state, existingDebt.id) : 0;
+        type = curSigned > 0 ? 'repay_in' : 'borrow';
+      } else {
+        const curSigned = existingDebt ? personSignedBalance(state, existingDebt.id) : 0;
+        type = curSigned < 0 ? 'repay_out' : 'lend';
+      }
+    }
     if (type === 'expense' && f.get('isTax') === 'on' && !f.get('deductFromCategoryId')) {
       throw Error('Выбери источник дохода для оплаты налога');
     }
@@ -1328,13 +1293,15 @@ function transactionModal(t, defaults = {}, resuming = false) {
     readItems();
     const type = dialog.querySelector('[name=type]').value;
     dialog.querySelector('#transferFields').innerHTML = type === 'transfer' ? `<span>Куда перевести</span><select name="toAccountId">${accountOpts(d.toAccountId)}</select>` : '';
-    if (['borrow', 'lend', 'repay_out', 'repay_in'].includes(type)) {
-      const canNew = true;
+    if (type === 'debt' || ['borrow', 'lend', 'repay_out', 'repay_in'].includes(type)) {
       const people = state.debts.filter(x => !isInstallmentDebt(x));
-      const installments = type === 'repay_out' ? state.debts.filter(x => isInstallmentDebt(x)) : [];
+      const installments = activeDebtFlow === 'out' ? state.debts.filter(x => isInstallmentDebt(x)) : [];
       const list = [...people, ...installments];
+      const curSel = dialog.querySelector('#txDebtSelect')?.value;
       const defaultNew = d.debtId === '__new__' || !list.length;
-      const selectedDebt = defaultNew ? '__new__' : (d.debtId || list[0]?.id || '');
+      const selectedDebt = (curSel && (curSel === '__new__' || list.some(x => x.id === curSel)))
+        ? curSel
+        : (defaultNew ? '__new__' : (d.debtId || list[0]?.id || ''));
       const describeDebtOption = (x) => {
         if (isInstallmentDebt(x)) return `💳 ${x.name} (рассрочка · остаток ${rub(debtRemaining(state, x.id))})`;
         const signed = personSignedBalance(state, x.id);
@@ -1342,22 +1309,13 @@ function transactionModal(t, defaults = {}, resuming = false) {
         if (signed < 0) return `🤝 ${x.name} · я должен ${rub(Math.abs(signed))}`;
         return `🤝 ${x.name} · в расчёте (0 ₽)`;
       };
-      const isPlusSign = ['lend', 'repay_in'].includes(type);
       dialog.querySelector('#debtFields').innerHTML =
-        `<div class="debt-sign-box">` +
-          `<div class="debt-sign-tabs">` +
-            `<button type="button" class="debt-sign-btn ${isPlusSign ? 'sign-plus-active' : 'ghost'}" data-debt-sign="plus">➕ В плюс (Дал / Мне вернули)</button>` +
-            `<button type="button" class="debt-sign-btn ${!isPlusSign ? 'sign-minus-active' : 'ghost'}" data-debt-sign="minus">➖ В минус (Взял / Я должен)</button>` +
-          `</div>` +
-          `<div class="debt-submode-row">` +
-            (isPlusSign
-              ? `<button type="button" class="small ${type === 'lend' ? 'primary' : 'ghost'}" data-debt-exact-type="lend">Я дал в долг (− со счёта)</button>` +
-                `<button type="button" class="small ${type === 'repay_in' ? 'primary' : 'ghost'}" data-debt-exact-type="repay_in">Мне вернули (+ на счёт)</button>`
-              : `<button type="button" class="small ${type === 'borrow' ? 'primary' : 'ghost'}" data-debt-exact-type="borrow">Я взял в долг (+ на счёт)</button>` +
-                `<button type="button" class="small ${type === 'repay_out' ? 'primary' : 'ghost'}" data-debt-exact-type="repay_out">Я отдал долг (− со счёта)</button>`) +
-          `</div>` +
+        `<div class="segmented segmented-2x2 debt-two-actions">` +
+          `<button type="button" class="${activeDebtFlow === 'in' ? 'primary' : 'ghost'}" data-debt-flow="in">➕ Мне вернули / Я взял</button>` +
+          `<button type="button" class="${activeDebtFlow === 'out' ? 'primary' : 'ghost'}" data-debt-flow="out">➖ Я дал / Я вернул</button>` +
         `</div>` +
-        `<div class="debt-field-header"><span>Человек (баланс пересчитается автоматически)</span><button type="button" class="small soft" id="btnToggleNewDebt">${selectedDebt === '__new__' && list.length ? 'Выбрать из списка' : '+ Новый человек'}</button></div>` +
+        `<small class="muted debt-flow-hint">${activeDebtFlow === 'in' ? 'Деньги пришли (+ на выбранный счёт · баланс человека в минус)' : 'Деньги ушли (− с выбранного счёта · баланс человека в плюс)'}</small>` +
+        `<div class="debt-field-header"><span>Человек (баланс пересчитается сам)</span><button type="button" class="small soft" id="btnToggleNewDebt">${selectedDebt === '__new__' && list.length ? 'Выбрать из списка' : '+ Новый человек'}</button></div>` +
         `<select name="debtId" id="txDebtSelect" required>` +
           `${list.map(x => option(x.id, describeDebtOption(x), selectedDebt)).join('')}` +
           `${option('__new__', '➕ Новый человек / создать прямо здесь…', selectedDebt)}` +
@@ -1368,7 +1326,6 @@ function transactionModal(t, defaults = {}, resuming = false) {
             `${field('Срок возврата · необязательно', `<input name="newDebtDue" type="date" value="${esc(d.newDebtDue || '')}">`)}` +
             `${field('Заметка · необязательно', `<input name="newDebtNote" type="text" maxlength="120" placeholder="До пятницы / на карту" value="${esc(d.newDebtNote || '')}">`)}` +
           `</div>` +
-          `<small class="muted">Единый профиль человека: баланс сам пересчитывается в обе стороны.</small>` +
         `</div>`;
 
       const sel = dialog.querySelector('#txDebtSelect');
@@ -1387,17 +1344,9 @@ function transactionModal(t, defaults = {}, resuming = false) {
         sel.value = (sel.value === '__new__' && list.length) ? list[0].id : '__new__';
         syncNewBox();
       };
-      dialog.querySelectorAll('[data-debt-sign]').forEach(b => {
+      dialog.querySelectorAll('[data-debt-flow]').forEach(b => {
         b.onclick = () => {
-          const typeSel = dialog.querySelector('[name=type]');
-          typeSel.value = b.dataset.debtSign === 'plus' ? 'lend' : 'borrow';
-          drawType();
-        };
-      });
-      dialog.querySelectorAll('[data-debt-exact-type]').forEach(b => {
-        b.onclick = () => {
-          const typeSel = dialog.querySelector('[name=type]');
-          typeSel.value = b.dataset.debtExactType;
+          activeDebtFlow = b.dataset.debtFlow;
           drawType();
         };
       });
@@ -1937,16 +1886,23 @@ function shiftOdoModal(shiftId) {
   );
 }
 
-function quickAddDelivery(shiftId, forceNoAmount = false) {
+function quickAddDelivery(shiftId, forceNoAmount = false, customAmountCents = undefined, customOrdersCount = undefined) {
   const x = state.courierShifts.find(sh => sh.id === shiftId);
   if (!x) return;
-  const amountInput = app.querySelector(`[data-quick-amount="${shiftId}"]`);
-  const rawAmount = forceNoAmount ? '' : (amountInput?.value || '').trim();
-  const amount = rawAmount ? cents(rawAmount) : null;
-  let orders = quickOrders;
-  if (quickPlusMode) {
-    const customInp = app.querySelector(`#customQuickOrders_${shiftId}`);
-    orders = Math.max(1, Math.min(1000, Number(customInp?.value) || 3));
+  let amount = null;
+  if (!forceNoAmount) {
+    if (customAmountCents !== undefined) {
+      amount = customAmountCents;
+    } else {
+      const amountInput = dialog.open ? dialog.querySelector('#modalDrumAmountInput') : app.querySelector(`[data-quick-amount="${shiftId}"]`);
+      const rawAmount = (amountInput?.value || '').trim();
+      amount = rawAmount ? cents(rawAmount) : null;
+    }
+  }
+  let orders = customOrdersCount !== undefined ? customOrdersCount : quickOrders;
+  if (customOrdersCount === undefined && quickPlusMode) {
+    const customInp = dialog.open ? dialog.querySelector('#modalCustomOrdersInp') : app.querySelector(`#customQuickOrders_${shiftId}`);
+    orders = Math.max(1, Math.min(1000, Number(customInp?.value) || 4));
   }
   mutate(st => {
     const shift = st.courierShifts.find(sh => sh.id === shiftId);
@@ -1956,7 +1912,343 @@ function quickAddDelivery(shiftId, forceNoAmount = false) {
   quickOrders = 1;
   quickPlusMode = false;
   resetDrumToAverage(1);
-  toast(`Поездка (#${(x.entries?.length || 0) + 1}, выдач: ${orders})${amount ? ' на ' + rub(amount) : ' без суммы'} записана`);
+  toast(`Заказ (#${(x.entries?.length || 0) + 1}, выдач: ${orders})${amount ? ' на ' + rub(amount) : ' без суммы'} добавлен`);
+}
+
+function deliveryOrderDrumModal(shiftId) {
+  const x = state.courierShifts.find(sh => sh.id === shiftId) || state.courierShifts.find(sh => sh.startedAt && !sh.endedAt);
+  if (!x) {
+    toast('Сначала начни смену доставки');
+    return;
+  }
+  quickOrders = 1;
+  quickPlusMode = false;
+  drumRubles = 200;
+  drumKopeks = 0;
+
+  const renderWheelSlots = (centerVal, isKop = false) => {
+    const fmt = (v) => isKop ? String(((v % 100) + 100) % 100).padStart(2, '0') : String(Math.max(0, v));
+    return [-2, -1, 0, 1, 2].map(offset => {
+      const val = isKop ? (((centerVal + offset) % 100) + 100) % 100 : Math.max(0, centerVal + offset);
+      const cls = offset === 0 ? 'drum-slot-center' : Math.abs(offset) === 1 ? 'drum-slot-near' : 'drum-slot-far';
+      return `<div class="drum-slot ${cls}" data-slot-offset="${offset}">${fmt(val)}</div>`;
+    }).join('');
+  };
+
+  modal('➕ Новый заказ в смену',
+    `<div class="drum-modal-body">` +
+      `<div class="drum-orders-selector">` +
+        `<span class="label">Количество заказов в поездке:</span>` +
+        `<div class="segmented segmented-4col" id="modalOrderCountBtns">` +
+          `<button type="button" class="primary" data-modal-order-preset="1">1<b>200 ₽</b></button>` +
+          `<button type="button" class="ghost" data-modal-order-preset="2">2<b>310 ₽</b></button>` +
+          `<button type="button" class="ghost" data-modal-order-preset="3">3<b>400 ₽</b></button>` +
+          `<button type="button" class="ghost" data-modal-order-preset="4+">4+<b>500 ₽</b></button>` +
+        `</div>` +
+        `<div id="modalCustomOrdersWrap" class="custom-orders-modal-row" hidden>` +
+          `<label class="field"><span>Укажи точное число заказов (4 и более)</span><input type="number" id="modalCustomOrdersInp" data-no-math="true" value="4" min="4" max="100"></label>` +
+        `</div>` +
+      `</div>` +
+
+      `<div class="alarm-Display-box modal-alarm-display">` +
+        `<div class="alarm-display-header">` +
+          `<span id="modalOrderAvgCaption">Выбрано: <b>1 заказ</b> · базовая ставка <b>200 ₽</b></span>` +
+        `</div>` +
+        `<div class="alarm-main-input-wrap">` +
+          `<input type="text" inputmode="decimal" data-no-math="true" class="alarm-main-input" id="modalDrumAmountInput" value="${esc(formatDrumString(drumRubles, drumKopeks))}" placeholder="200">` +
+          `<span class="alarm-rub-sign">₽</span>` +
+        `</div>` +
+      `</div>` +
+
+      `<div class="alarm-drums-grid modal-drums-large">` +
+        `<div class="alarm-drum-col">` +
+          `<div class="alarm-drum-title">Рубли (₽)</div>` +
+          `<div class="inertia-drum-viewport" id="rubDrumViewport" data-wheel-kind="rub">` +
+            `<div class="inertia-drum-lens"></div>` +
+            `<div class="inertia-drum-track" id="rubDrumTrack">${renderWheelSlots(drumRubles, false)}</div>` +
+          `</div>` +
+          `<div class="drum-fine-btns">` +
+            `<button type="button" class="small ghost" data-modal-drum-step="rub|-10">−10</button>` +
+            `<button type="button" class="small ghost" data-modal-drum-step="rub|-1">−1</button>` +
+            `<button type="button" class="small ghost" data-modal-drum-step="rub|1">+1</button>` +
+            `<button type="button" class="small ghost" data-modal-drum-step="rub|10">+10</button>` +
+          `</div>` +
+        `</div>` +
+
+        `<div class="alarm-drum-sep">:</div>` +
+
+        `<div class="alarm-drum-col">` +
+          `<div class="alarm-drum-title">Копейки (коп)</div>` +
+          `<div class="inertia-drum-viewport" id="kopDrumViewport" data-wheel-kind="kop">` +
+            `<div class="inertia-drum-lens"></div>` +
+            `<div class="inertia-drum-track" id="kopDrumTrack">${renderWheelSlots(drumKopeks, true)}</div>` +
+          `</div>` +
+          `<div class="drum-fine-btns">` +
+            `<button type="button" class="small ghost" data-modal-drum-step="kop|-10">−10</button>` +
+            `<button type="button" class="small ghost" data-modal-drum-step="kop|-1">−1</button>` +
+            `<button type="button" class="small ghost" data-modal-drum-step="kop|1">+1</button>` +
+            `<button type="button" class="small ghost" data-modal-drum-step="kop|10">+10</button>` +
+          `</div>` +
+        `</div>` +
+      `</div>` +
+
+      `<div class="alarm-submit-row">` +
+        `<button type="button" class="primary alarm-save-btn" id="modalSaveOrderBtn">✅ Записать заказ в смену</button>` +
+        `<button type="button" class="ghost" id="modalSaveNoAmountBtn">Без суммы</button>` +
+      `</div>` +
+    `</div>`,
+    null
+  );
+
+  const amountInp = dialog.querySelector('#modalDrumAmountInput');
+  const rubTrack = dialog.querySelector('#rubDrumTrack');
+  const kopTrack = dialog.querySelector('#kopDrumTrack');
+  const captionEl = dialog.querySelector('#modalOrderAvgCaption');
+  const customWrap = dialog.querySelector('#modalCustomOrdersWrap');
+  const customInp = dialog.querySelector('#modalCustomOrdersInp');
+
+  const syncModalDrumUi = (updateInput = true) => {
+    if (rubTrack) rubTrack.innerHTML = renderWheelSlots(drumRubles, false);
+    if (kopTrack) kopTrack.innerHTML = renderWheelSlots(drumKopeks, true);
+    if (updateInput && amountInp) {
+      amountInp.value = formatDrumString(drumRubles, drumKopeks);
+    }
+    if (captionEl) {
+      const ordNum = quickPlusMode ? Math.max(4, Number(customInp?.value) || 4) : quickOrders;
+      const presetRub = Math.floor(presetOrderAmountCents(ordNum) / 100);
+      captionEl.innerHTML = `Выбрано: <b>${ordNum} ${ordNum === 1 ? 'заказ' : ordNum < 5 ? 'заказа' : 'заказов'}</b> · среднее значение: <b>${presetRub} ₽</b>`;
+    }
+  };
+
+  // Smooth animated transition to a target value (for preset buttons 1->200, 2->310, 3->400, 4+->500)
+  let animRaf = null;
+  const animateDrumTo = (targetRub, targetKop = 0) => {
+    if (animRaf) cancelAnimationFrame(animRaf);
+    const startRub = drumRubles;
+    const diff = targetRub - startRub;
+    if (diff === 0 && drumKopeks === targetKop) {
+      syncModalDrumUi(true);
+      return;
+    }
+    const duration = 260;
+    const t0 = performance.now();
+    const tick = (now) => {
+      const p = Math.min(1, (now - t0) / duration);
+      const ease = 1 - Math.pow(1 - p, 3);
+      drumRubles = Math.round(startRub + diff * ease);
+      drumKopeks = targetKop;
+      if (rubTrack) {
+        const subShift = ((startRub + diff * ease) - drumRubles) * -40;
+        rubTrack.style.transform = `translate3d(0, ${subShift.toFixed(1)}px, 0)`;
+      }
+      syncModalDrumUi(true);
+      if (p < 1) {
+        animRaf = requestAnimationFrame(tick);
+      } else {
+        drumRubles = targetRub;
+        drumKopeks = targetKop;
+        if (rubTrack) rubTrack.style.transform = 'translate3d(0, 0, 0)';
+        syncModalDrumUi(true);
+      }
+    };
+    animRaf = requestAnimationFrame(tick);
+  };
+
+  // Attach real physics inertia scrolling to each drum viewport
+  const attachInertiaWheel = (viewportEl, trackEl, kind) => {
+    const ITEM_H = 42;
+    let dragging = false;
+    let lastY = 0;
+    let lastT = 0;
+    let velocityY = 0; // px per ms
+    let accumY = 0;
+    let inertiaId = null;
+
+    const stepValue = (steps) => {
+      if (!steps) return;
+      if (kind === 'rub') {
+        drumRubles = Math.max(0, drumRubles + steps);
+      } else {
+        let nextK = drumKopeks + steps;
+        while (nextK < 0) {
+          if (drumRubles > 0) { drumRubles--; nextK += 100; } else { nextK = 0; break; }
+        }
+        while (nextK >= 100) {
+          drumRubles++; nextK -= 100;
+        }
+        drumKopeks = nextK;
+      }
+      syncModalDrumUi(true);
+    };
+
+    const stopInertia = () => {
+      if (inertiaId) {
+        cancelAnimationFrame(inertiaId);
+        inertiaId = null;
+      }
+      trackEl.style.transition = 'transform 0.16s cubic-bezier(0.22, 1, 0.36, 1)';
+      trackEl.style.transform = 'translate3d(0, 0, 0)';
+    };
+
+    const applyDisplacement = (dy) => {
+      accumY += dy;
+      while (Math.abs(accumY) >= ITEM_H) {
+        const dir = accumY < 0 ? 1 : -1; // swipe up (dy < 0) increases number
+        stepValue(dir);
+        accumY += dir * ITEM_H;
+      }
+      trackEl.style.transition = 'none';
+      trackEl.style.transform = `translate3d(0, ${accumY.toFixed(1)}px, 0)`;
+    };
+
+    viewportEl.addEventListener('pointerdown', e => {
+      if (inertiaId) { cancelAnimationFrame(inertiaId); inertiaId = null; }
+      dragging = true;
+      lastY = e.clientY;
+      lastT = performance.now();
+      velocityY = 0;
+      accumY = 0;
+      try { viewportEl.setPointerCapture(e.pointerId); } catch {}
+    });
+
+    viewportEl.addEventListener('pointermove', e => {
+      if (!dragging) return;
+      e.preventDefault();
+      const now = performance.now();
+      const dy = e.clientY - lastY;
+      const dt = Math.max(1, now - lastT);
+      const instV = dy / dt;
+      velocityY = velocityY * 0.65 + instV * 0.35;
+      lastY = e.clientY;
+      lastT = now;
+      applyDisplacement(dy);
+    });
+
+    const finishGesture = (e) => {
+      if (!dragging) return;
+      dragging = false;
+      // If user just tapped top or bottom neighbor slot without dragging
+      if (Math.abs(accumY) < 6 && Math.abs(velocityY) < 0.08) {
+        const rect = viewportEl.getBoundingClientRect();
+        const relY = (e.clientY || lastY) - rect.top;
+        if (relY < rect.height * 0.36) stepValue(-1);
+        else if (relY > rect.height * 0.64) stepValue(1);
+        stopInertia();
+        return;
+      }
+      // Run alarm-clock momentum inertia if flicked
+      let v = Math.max(-3.6, Math.min(3.6, velocityY * 16)); // px per 16ms frame
+      if (Math.abs(v) > 2.2) {
+        const spinFrame = () => {
+          applyDisplacement(v);
+          v *= 0.935; // smooth exponential friction
+          if (Math.abs(v) > 0.65) {
+            inertiaId = requestAnimationFrame(spinFrame);
+          } else {
+            if (Math.abs(accumY) > ITEM_H * 0.45) {
+              stepValue(accumY < 0 ? 1 : -1);
+            }
+            accumY = 0;
+            stopInertia();
+          }
+        };
+        inertiaId = requestAnimationFrame(spinFrame);
+      } else {
+        if (Math.abs(accumY) > ITEM_H * 0.45) {
+          stepValue(accumY < 0 ? 1 : -1);
+        }
+        accumY = 0;
+        stopInertia();
+      }
+    };
+
+    viewportEl.addEventListener('pointerup', finishGesture);
+    viewportEl.addEventListener('pointercancel', finishGesture);
+    viewportEl.addEventListener('wheel', e => {
+      e.preventDefault();
+      stepValue(e.deltaY > 0 ? 1 : -1);
+    }, { passive: false });
+  };
+
+  attachInertiaWheel(dialog.querySelector('#rubDrumViewport'), rubTrack, 'rub');
+  attachInertiaWheel(dialog.querySelector('#kopDrumViewport'), kopTrack, 'kop');
+
+  // Order count buttons: 1 -> 200, 2 -> 310, 3 -> 400, 4+ -> 500
+  dialog.querySelectorAll('[data-modal-order-preset]').forEach(b => {
+    b.onclick = () => {
+      const val = b.dataset.modalOrderPreset;
+      dialog.querySelectorAll('[data-modal-order-preset]').forEach(btnEl => {
+        btnEl.className = btnEl === b ? 'primary' : 'ghost';
+      });
+      if (val === '4+') {
+        quickPlusMode = true;
+        quickOrders = Math.max(4, Number(customInp?.value) || 4);
+        customWrap.hidden = false;
+        setTimeout(() => { customInp.focus(); customInp.select(); }, 30);
+        animateDrumTo(500, 0);
+      } else {
+        quickPlusMode = false;
+        quickOrders = Number(val);
+        customWrap.hidden = true;
+        const targetRub = Math.floor(presetOrderAmountCents(quickOrders) / 100);
+        animateDrumTo(targetRub, 0);
+      }
+    };
+  });
+
+  if (customInp) {
+    customInp.oninput = () => {
+      quickOrders = Math.max(4, Number(customInp.value) || 4);
+      syncModalDrumUi(false);
+    };
+  }
+
+  dialog.querySelectorAll('[data-modal-drum-step]').forEach(b => {
+    b.onclick = () => {
+      const [kind, deltaStr] = b.dataset.modalDrumStep.split('|');
+      const delta = Number(deltaStr);
+      if (kind === 'rub') {
+        animateDrumTo(Math.max(0, drumRubles + delta), drumKopeks);
+      } else {
+        let nextK = drumKopeks + delta;
+        let nextR = drumRubles;
+        while (nextK < 0) {
+          if (nextR > 0) { nextR--; nextK += 100; } else { nextK = 0; break; }
+        }
+        while (nextK >= 100) {
+          nextR++; nextK -= 100;
+        }
+        drumRubles = nextR;
+        drumKopeks = nextK;
+        syncModalDrumUi(true);
+      }
+    };
+  });
+
+  if (amountInp) {
+    amountInp.addEventListener('input', () => {
+      const clean = String(amountInp.value || '').replace(',', '.');
+      const [rPart, kPart] = clean.split('.');
+      if (/^\d+$/.test(rPart || '')) drumRubles = Number(rPart);
+      if (kPart !== undefined && /^\d{1,2}$/.test(kPart)) drumKopeks = Number(kPart.padEnd(2, '0'));
+      else if (kPart === undefined) drumKopeks = 0;
+      syncModalDrumUi(false);
+    });
+  }
+
+  dialog.querySelector('#modalSaveOrderBtn').onclick = () => {
+    const rawVal = (amountInp?.value || '').trim();
+    const amtCents = rawVal ? cents(rawVal) : (drumRubles * 100 + drumKopeks);
+    const ordCount = quickPlusMode ? Math.max(4, Number(customInp?.value) || 4) : quickOrders;
+    dialog.close();
+    quickAddDelivery(x.id, false, amtCents, ordCount);
+  };
+
+  dialog.querySelector('#modalSaveNoAmountBtn').onclick = () => {
+    const ordCount = quickPlusMode ? Math.max(4, Number(customInp?.value) || 4) : quickOrders;
+    dialog.close();
+    quickAddDelivery(x.id, true, null, ordCount);
+  };
 }
 
 function quickTip(shiftId, rubles) {
@@ -2371,17 +2663,16 @@ function thumbSheetModal() {
     `<div class="thumb-sheet-grid">` +
       `<button type="button" class="thumb-card-btn thumb-tone-exp" data-thumb-tx="expense"><span class="thumb-card-ico">💸</span><span class="thumb-card-txt"><b>Расход</b><small>Покупка или сплит</small></span></button>` +
       `<button type="button" class="thumb-card-btn thumb-tone-inc" data-thumb-tx="income"><span class="thumb-card-ico">💰</span><span class="thumb-card-txt"><b>Доход</b><small>Поступление</small></span></button>` +
-      `<button type="button" class="thumb-card-btn thumb-tone-debt" data-thumb-tx="lend"><span class="thumb-card-ico">🤝</span><span class="thumb-card-txt"><b>Дал / занял</b><small>Новому / знакомому</small></span></button>` +
-      `<button type="button" class="thumb-card-btn thumb-tone-inc" data-thumb-tx="repay_in"><span class="thumb-card-ico">↩️</span><span class="thumb-card-txt"><b>Вернули долг</b><small>Оформить возврат</small></span></button>` +
+      `<button type="button" class="thumb-card-btn thumb-tone-debt" data-thumb-tx="debt"><span class="thumb-card-ico">🤝</span><span class="thumb-card-txt"><b>Долги</b><small>Взял / дал / вернули</small></span></button>` +
       `<button type="button" class="thumb-card-btn thumb-tone-trf" data-thumb-tx="transfer"><span class="thumb-card-ico">⇄</span><span class="thumb-card-txt"><b>Перевод</b><small>Между счетами</small></span></button>` +
     `</div>` +
     `<div class="thumb-sheet-section"><div class="thumb-section-header">🛵 Доставка в 1 касание</div><div class="actions">` +
       (activeShifts.length ? activeShifts.map(x =>
-        `<button type="button" class="primary small" data-thumb-courier="instantTrip1|${esc(x.id)}">⚡ +1 выдача</button>` +
-        `<button type="button" class="soft small" data-thumb-courier="instantTrip2|${esc(x.id)}">+2 выдачи</button>` +
-        `<button type="button" class="ghost small" data-thumb-courier="shiftExpense|${esc(x.id)}">− Расход смены</button>` +
-        `<button type="button" class="ghost small" data-thumb-courier="tip|${esc(x.id)}">+ Чай</button>`
-      ).join('') : `<button type="button" class="primary small" data-thumb-courier="startDeliveryShift|">▶ Начать смену доставки</button><button type="button" class="ghost small" data-thumb-nav="courier">Пульт доставки →</button>`) +
+        `<button type="button" class="primary small" data-thumb-courier="openDrumOrderModal|${esc(x.id)}">➕ + Заказ</button>` +
+        `<button type="button" class="soft small" data-thumb-courier="shiftExpense|${esc(x.id)}">🍔 Продукты / Расход</button>` +
+        `<button type="button" class="ghost small" data-thumb-courier="shiftOdoModal|${esc(x.id)}">⛽ Бензин</button>` +
+        `<button type="button" class="ghost small" data-thumb-courier="tip|${esc(x.id)}">🍵 + Чай</button>`
+      ).join('') : `<button type="button" class="primary small" data-thumb-courier="startDeliveryShift|">▶ Начать смену доставки</button><button type="button" class="ghost small" data-thumb-nav="courier">Открыть Работу →</button>`) +
     `</div></div>` +
     (quickBtns ? `<div class="thumb-sheet-section"><div class="thumb-section-header">⚡ Быстрые шаблоны</div><div class="quick-buttons">${quickBtns}</div></div>` : ''),
     null,
@@ -2390,7 +2681,7 @@ function thumbSheetModal() {
   dialog.querySelectorAll('[data-thumb-tx]').forEach(b => b.onclick = () => {
     const tp = b.dataset.thumbTx;
     dialog.close();
-    transactionModal(null, { type: tp, ...(tp === 'lend' ? { debtId: '__new__' } : {}) });
+    transactionModal(null, { type: tp });
   });
   dialog.querySelectorAll('[data-thumb-courier]').forEach(b => b.onclick = () => {
     const [act, id] = b.dataset.thumbCourier.split('|');
@@ -2495,7 +2786,7 @@ async function sendImmediateNotification(title, body, idNum = 9001) {
 async function triggerTestNotification() {
   const dueList = duePaymentNotifications(state);
   const sample = dueList[0] || {
-    title: '🔔 Проверка уведомлений Финансист 3.4',
+    title: '🔔 Проверка уведомлений Финансист 3.5',
     body: 'Уведомления работают! Приложение напомнит за 1 день до платежа, в день оплаты и при просрочке.'
   };
   const ok = await sendImmediateNotification(sample.title, sample.body, Math.floor(Date.now() % 100000));
@@ -2589,23 +2880,38 @@ function checkStartupPaymentAlerts() {
 // ==============================================================================
 
 
-// 3x3 Pattern Lock SVG Helper (points 1..9)
+// 3x3 Pattern Lock SVG Helper (points 1..9 in 210x210 grid)
 function patternDotCoords(num) {
   const idx = Math.max(0, Math.min(8, Number(num) - 1));
   const row = Math.floor(idx / 3), col = idx % 3;
-  return { x: 30 + col * 60, y: 30 + row * 60 };
+  return { x: 35 + col * 70, y: 35 + row * 70 };
 }
 
-function buildPatternLinesSvg(seqStr = '') {
+function intermediatePatternDot(aNum, bNum) {
+  const a = Number(aNum) - 1, b = Number(bNum) - 1;
+  if (a < 0 || b < 0 || a === b) return null;
+  const r1 = Math.floor(a / 3), c1 = a % 3;
+  const r2 = Math.floor(b / 3), c2 = b % 3;
+  if ((r1 + r2) % 2 === 0 && (c1 + c2) % 2 === 0) {
+    const mid = ((r1 + r2) / 2) * 3 + ((c1 + c2) / 2) + 1;
+    return String(mid);
+  }
+  return null;
+}
+
+function buildPatternLinesSvg(seqStr = '', livePoint = null) {
   const nums = String(seqStr || '').split('-').map(Number).filter(n => n >= 1 && n <= 9);
-  if (nums.length < 2) return '';
   const lines = [];
   for (let i = 0; i < nums.length - 1; i++) {
     const a = patternDotCoords(nums[i]);
     const b = patternDotCoords(nums[i + 1]);
     const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
     lines.push(`<line x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}" stroke="#6366F1" stroke-width="5" stroke-linecap="round"/>`);
-    lines.push(`<circle cx="${mx}" cy="${my}" r="3.5" fill="#34D399"/>`);
+    lines.push(`<circle cx="${mx}" cy="${my}" r="4" fill="#34D399"/>`);
+  }
+  if (livePoint && nums.length >= 1) {
+    const last = patternDotCoords(nums[nums.length - 1]);
+    lines.push(`<line x1="${last.x}" y1="${last.y}" x2="${livePoint.x.toFixed(1)}" y2="${livePoint.y.toFixed(1)}" stroke="#34D399" stroke-width="4" stroke-dasharray="6 5" stroke-linecap="round"/>`);
   }
   return lines.join('');
 }
@@ -2641,30 +2947,33 @@ function openSignaturePadModal(devId, sigKind = 'intake', returnToPdf = false) {
   const tot = repairDeviceTotals(dev);
   const isHandover = sigKind === 'handover';
 
+  try { screen.orientation?.lock?.('landscape').catch(() => {}); } catch {}
+
   let overlay = document.getElementById('fullscreenSigOverlay');
   if (!overlay) {
     overlay = document.createElement('div');
     overlay.id = 'fullscreenSigOverlay';
-    overlay.className = 'fullscreen-sig-overlay';
+    overlay.className = 'fullscreen-sig-overlay landscape-sig-mode';
     document.body.appendChild(overlay);
+  } else {
+    overlay.className = 'fullscreen-sig-overlay landscape-sig-mode';
   }
 
   overlay.innerHTML =
-    `<div class="sig-pad-shell">` +
+    `<div class="sig-pad-shell" id="sigPadShell">` +
       `<div class="sig-pad-topbar">` +
-        `<div>` +
-          `<h3>✍️ ${isHandover ? 'Подпись при выдаче устройства' : 'Подпись при приёме в ремонт'}</h3>` +
+        `<div class="sig-pad-title-wrap">` +
+          `<h3>✍️ ${isHandover ? 'Подпись при выдаче устройства' : 'Подпись при приёме в ремонт'} (горизонтальный режим)</h3>` +
           `<small>${esc(dev.title)} · Заказчик: <b>${esc(client?.name || 'Клиент')}</b>${tot.totalPrice ? ` · Итого: <b>${rub(tot.totalPrice)}</b>` : ''}${isHandover && dev.warranty ? ` · Гарантия: <b>${esc(dev.warranty)}</b>` : ''}</small>` +
         `</div>` +
         `<div class="actions">` +
           `<button type="button" class="soft small" id="sigClearBtn">Очистить</button>` +
-          `<button type="button" class="ghost small" id="sigCancelBtn">Отмена</button>` +
-          `<button type="button" class="primary small" id="sigSaveBtn">✅ Сохранить подпись</button>` +
+          `<button type="button" class="primary small" id="sigSaveBtn">✅ Сохранить</button>` +
+          `<button type="button" class="modal-close-btn" id="sigCancelBtn" aria-label="Закрыть">✕</button>` +
         `</div>` +
       `</div>` +
       `<div class="sig-canvas-stage" id="sigCanvasStage">` +
         `<div class="sig-guide-line">` +
-          `<span class="sig-cross-mark" aria-hidden="true">✕</span>` +
           `<span class="sig-guide-caption">${isHandover ? 'Устройство проверил, претензий не имею (подпись заказчика)' : 'С условиями приёма и оферты согласен (подпись заказчика)'}</span>` +
         `</div>` +
         `<canvas id="sigFullscreenCanvas"></canvas>` +
@@ -2673,21 +2982,29 @@ function openSignaturePadModal(devId, sigKind = 'intake', returnToPdf = false) {
 
   overlay.hidden = false;
 
+  const shell = overlay.querySelector('#sigPadShell');
   const canvas = overlay.querySelector('#sigFullscreenCanvas');
   const stage = overlay.querySelector('#sigCanvasStage');
   const ctx = canvas.getContext('2d');
   let drawing = false, hasStrokes = false, lastX = 0, lastY = 0;
+  let isRotated90 = false;
 
   const resizeCanvas = () => {
+    isRotated90 = window.innerHeight > window.innerWidth;
+    shell.classList.toggle('sig-rotated-90', isRotated90);
     const rect = stage.getBoundingClientRect();
     const dpr = Math.min(2, window.devicePixelRatio || 1);
-    canvas.width = Math.max(320, Math.floor(rect.width * dpr));
-    canvas.height = Math.max(240, Math.floor(rect.height * dpr));
+    const logicalW = isRotated90 ? Math.max(420, Math.floor(rect.height)) : Math.max(420, Math.floor(rect.width));
+    const logicalH = isRotated90 ? Math.max(190, Math.floor(rect.width)) : Math.max(190, Math.floor(rect.height));
+    canvas.width = Math.floor(logicalW * dpr);
+    canvas.height = Math.floor(logicalH * dpr);
+    canvas.dataset.logicalW = String(logicalW);
+    canvas.dataset.logicalH = String(logicalH);
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
     ctx.strokeStyle = '#0F172A';
-    ctx.lineWidth = 3.2;
+    ctx.lineWidth = 3.4;
   };
   resizeCanvas();
 
@@ -2695,7 +3012,18 @@ function openSignaturePadModal(devId, sigKind = 'intake', returnToPdf = false) {
     const r = canvas.getBoundingClientRect();
     const clientX = e.touches ? e.touches[0].clientX : e.clientX;
     const clientY = e.touches ? e.touches[0].clientY : e.clientY;
-    return { x: clientX - r.left, y: clientY - r.top };
+    const logicalW = Number(canvas.dataset.logicalW) || r.width;
+    const logicalH = Number(canvas.dataset.logicalH) || r.height;
+    if (isRotated90) {
+      return {
+        x: ((clientY - r.top) / Math.max(1, r.height)) * logicalW,
+        y: ((r.right - clientX) / Math.max(1, r.width)) * logicalH
+      };
+    }
+    return {
+      x: ((clientX - r.left) / Math.max(1, r.width)) * logicalW,
+      y: ((clientY - r.top) / Math.max(1, r.height)) * logicalH
+    };
   };
 
   const startDraw = (e) => {
@@ -2706,7 +3034,7 @@ function openSignaturePadModal(devId, sigKind = 'intake', returnToPdf = false) {
     lastX = p.x;
     lastY = p.y;
     ctx.beginPath();
-    ctx.arc(lastX, lastY, 1.5, 0, Math.PI * 2);
+    ctx.arc(lastX, lastY, 1.6, 0, Math.PI * 2);
     ctx.fillStyle = '#0F172A';
     ctx.fill();
   };
@@ -2730,20 +3058,25 @@ function openSignaturePadModal(devId, sigKind = 'intake', returnToPdf = false) {
   canvas.addEventListener('pointerup', endDraw);
   canvas.addEventListener('pointercancel', endDraw);
 
+  const closePad = () => {
+    try { screen.orientation?.unlock?.(); } catch {}
+    overlay.hidden = true;
+    overlay.innerHTML = '';
+  };
+
   overlay.querySelector('#sigClearBtn').onclick = () => {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     hasStrokes = false;
   };
 
   overlay.querySelector('#sigCancelBtn').onclick = () => {
-    overlay.hidden = true;
-    overlay.innerHTML = '';
+    closePad();
     if (returnToPdf) repairPdfModal(devId, sigKind);
   };
 
   overlay.querySelector('#sigSaveBtn').onclick = () => {
     if (!hasStrokes) {
-      toast('Распишись на экране рядом с крестиком ✕');
+      toast('Распишись пальцем на белом поле');
       return;
     }
     const dataUrl = canvas.toDataURL('image/png');
@@ -2758,8 +3091,7 @@ function openSignaturePadModal(devId, sigKind = 'intake', returnToPdf = false) {
         d.intakeSignedAt = Date.now();
       }
     });
-    overlay.hidden = true;
-    overlay.innerHTML = '';
+    closePad();
     toast(isHandover ? 'Подпись выдачи сохранена в акте!' : 'Подпись приёмки сохранена в акте!');
     if (returnToPdf) repairPdfModal(devId, sigKind);
   };
@@ -2894,7 +3226,7 @@ function repairDeviceModal(devId = null, preClientId = null, startWindow = 'inta
   const modalTitle = dev ? `Ремонт #${dev.orderNum || '—'} · ${esc(dev.title)}` : 'Принять устройство (опросник приёма)';
 
   const bodyHtml =
-    `<div class="segmented repair-win-tabs" id="repairWinTabs">` +
+    `<div class="segmented segmented-2x2 repair-win-tabs" id="repairWinTabs">` +
       `<button type="button" class="${curWin === 'intake' ? 'primary' : 'ghost'}" data-rep-win="intake">1. Опросник приёма</button>` +
       `<button type="button" class="${curWin === 'diag' ? 'primary' : 'ghost'}" data-rep-win="diag">2. Диагноз и прайс</button>` +
       `<button type="button" class="${curWin === 'call' ? 'primary' : 'ghost'}" data-rep-win="call">3. Прозвон / сроки</button>` +
@@ -2954,19 +3286,19 @@ function repairDeviceModal(devId = null, preClientId = null, startWindow = 'inta
       /* Шаг 4. Пароль от смартфона / Графический ключ (с визуализацией 3x3) */
       `<div class="sub-box section">` +
         `<h3>4. Пароль / Доступ для проверки</h3>` +
-        `<div class="segmented" id="authTypeTabs">` +
-          Object.entries(DEVICE_AUTH_TYPES).map(([k, label]) => `<button type="button" class="small ${authType === k ? 'primary' : 'ghost'}" data-auth-mode="${k}">${esc(label)}</button>`).join('') +
+        `<div class="segmented segmented-2x2" id="authTypeTabs">` +
+          Object.entries(DEVICE_AUTH_TYPES).map(([k, label]) => `<button type="button" class="${authType === k ? 'primary' : 'ghost'}" data-auth-mode="${k}">${esc(label)}</button>`).join('') +
         `</div>` +
         `<div id="authPassPane" class="section" ${authType === 'pass' ? '' : 'hidden'}>` +
           field('Цифровой пин-код или текстовый пароль', input('authValue', dev?.authValue || '', 'text', 'maxlength="80" placeholder="Например: 0852 или пароль учётной записи"'), true) +
         `</div>` +
-        `<div id="authPatternPane" class="pattern-lock-box section" ${authType === 'pattern' ? '' : 'hidden'}>` +
+        `<div id="authPatternPane" class="pattern-lock-clean section" ${authType === 'pattern' ? '' : 'hidden'}>` +
           `<div class="pattern-lock-header">` +
-            `<span>Нажимай точки по порядку рисунка ключа: <b id="patternSeqReadout">${patternSeq.length ? patternSeq.join(' → ') : 'не задан'}</b></span>` +
+            `<span>Проведи пальцем по точкам (или нажимай по очереди): <b id="patternSeqReadout">${patternSeq.length ? patternSeq.join(' → ') : 'не задан'}</b></span>` +
             `<button type="button" class="small ghost" id="clearPatternBtn">Сбросить ключ</button>` +
           `</div>` +
           `<div class="pattern-grid-wrap" id="patternGridWrap">` +
-            `<svg class="pattern-svg-overlay" id="patternSvgOverlay" viewBox="0 0 180 180">${buildPatternLinesSvg(patternSeq.join('-'))}</svg>` +
+            `<svg class="pattern-svg-overlay" id="patternSvgOverlay" viewBox="0 0 210 210">${buildPatternLinesSvg(patternSeq.join('-'))}</svg>` +
             `<div class="pattern-dots-grid" id="patternDotsGrid">` +
               [1, 2, 3, 4, 5, 6, 7, 8, 9].map(n => {
                 const orderIdx = patternSeq.indexOf(String(n));
@@ -3012,6 +3344,10 @@ function repairDeviceModal(devId = null, preClientId = null, startWindow = 'inta
         field('Цена запчастей для клиента, ₽', input('partsClientPrice', dev?.partsClientPrice ? decimal(dev.partsClientPrice) : '', 'text', 'inputmode="decimal" placeholder="0"')) +
         field('Предоплата / Аванс от клиента, ₽', input('prepayment', dev?.prepayment ? decimal(dev.prepayment) : '', 'text', 'inputmode="decimal" placeholder="0"')) +
         field('Итоговая сумма для клиента, ₽', input('totalPrice', dev?.totalPrice ? decimal(dev.totalPrice) : '', 'text', 'inputmode="decimal" placeholder="Авторасчёт по прайсу"')) +
+        field('Срок гарантии (впиши свой или выбери кнопкой)', input('warrantyDiagInput', dev?.warranty || '30 дней', 'text', 'maxlength="120" placeholder="Например: 45 дней / 3 месяца / Без гарантии"'), true) +
+      `</div>` +
+      `<div class="quick-buttons section">` +
+        ['Без гарантии', '14 дней', '30 дней', '45 дней', '3 месяца', '6 месяцев', '1 год'].map(w => `<button type="button" class="small soft" data-warranty-preset="${esc(w)}">${esc(w)}</button>`).join('') +
       `</div>` +
       `<div class="note section" id="repairProfitReadout"></div>` +
     `</div>` +
@@ -3258,12 +3594,12 @@ function repairDeviceModal(devId = null, preClientId = null, startWindow = 'inta
     };
   }
 
-  // Step 4: Auth mode & Interactive 3x3 Pattern Lock Pad
+  // Step 4: Auth mode & Interactive 3x3 Pattern Lock Pad (continuous finger swipe + tap)
   const passPane = dialog.querySelector('#authPassPane');
   const patternPane = dialog.querySelector('#authPatternPane');
   const syncAuthModeUi = () => {
     dialog.querySelectorAll('[data-auth-mode]').forEach(b => {
-      b.className = 'small ' + (b.dataset.authMode === authType ? 'primary' : 'ghost');
+      b.className = b.dataset.authMode === authType ? 'primary' : 'ghost';
     });
     passPane.hidden = authType !== 'pass';
     patternPane.hidden = authType !== 'pattern';
@@ -3275,10 +3611,10 @@ function repairDeviceModal(devId = null, preClientId = null, startWindow = 'inta
     };
   });
 
-  const redrawPatternUi = () => {
+  const redrawPatternUi = (livePoint = null) => {
     const svgEl = dialog.querySelector('#patternSvgOverlay');
     const readoutEl = dialog.querySelector('#patternSeqReadout');
-    if (svgEl) svgEl.innerHTML = buildPatternLinesSvg(patternSeq.join('-'));
+    if (svgEl) svgEl.innerHTML = buildPatternLinesSvg(patternSeq.join('-'), livePoint);
     if (readoutEl) readoutEl.textContent = patternSeq.length ? patternSeq.join(' → ') : 'не задан';
     dialog.querySelectorAll('[data-pattern-dot]').forEach(dotBtn => {
       const n = dotBtn.dataset.patternDot;
@@ -3288,20 +3624,93 @@ function repairDeviceModal(devId = null, preClientId = null, startWindow = 'inta
     });
   };
 
-  dialog.querySelectorAll('[data-pattern-dot]').forEach(dotBtn => {
-    dotBtn.onclick = () => {
-      const n = dotBtn.dataset.patternDot;
-      const idx = patternSeq.indexOf(n);
-      if (idx === patternSeq.length - 1) patternSeq.pop();
-      else if (idx === -1) patternSeq.push(n);
-      redrawPatternUi();
+  const addDotToPattern = (dotStr) => {
+    if (!dotStr || patternSeq.includes(dotStr)) return false;
+    if (patternSeq.length > 0) {
+      const mid = intermediatePatternDot(patternSeq[patternSeq.length - 1], dotStr);
+      if (mid && !patternSeq.includes(mid)) patternSeq.push(mid);
+    }
+    patternSeq.push(dotStr);
+    return true;
+  };
+
+  const patWrap = dialog.querySelector('#patternGridWrap');
+  if (patWrap) {
+    let patDragging = false;
+    let movedDuringGesture = false;
+    let downDot = null;
+
+    const hitTestDot = (localX, localY) => {
+      for (let n = 1; n <= 9; n++) {
+        const c = patternDotCoords(n);
+        const dist = Math.hypot(localX - c.x, localY - c.y);
+        if (dist <= 27) return String(n);
+      }
+      return null;
     };
-  });
+
+    const getLocalCoords = (e) => {
+      const r = patWrap.getBoundingClientRect();
+      return {
+        x: ((e.clientX - r.left) / Math.max(1, r.width)) * 210,
+        y: ((e.clientY - r.top) / Math.max(1, r.height)) * 210
+      };
+    };
+
+    patWrap.addEventListener('pointerdown', e => {
+      e.preventDefault();
+      patDragging = true;
+      movedDuringGesture = false;
+      try { patWrap.setPointerCapture(e.pointerId); } catch {}
+      const pt = getLocalCoords(e);
+      const hit = hitTestDot(pt.x, pt.y);
+      downDot = hit;
+      if (hit) {
+        if (!patternSeq.includes(hit)) {
+          addDotToPattern(hit);
+          movedDuringGesture = true;
+        }
+        redrawPatternUi(pt);
+      }
+    });
+
+    patWrap.addEventListener('pointermove', e => {
+      if (!patDragging) return;
+      e.preventDefault();
+      const pt = getLocalCoords(e);
+      const hit = hitTestDot(pt.x, pt.y);
+      if (hit && hit !== downDot) {
+        movedDuringGesture = true;
+        addDotToPattern(hit);
+      } else if (hit && !patternSeq.includes(hit)) {
+        movedDuringGesture = true;
+        addDotToPattern(hit);
+      }
+      redrawPatternUi(pt);
+    });
+
+    const endPatDrag = (e) => {
+      if (!patDragging) return;
+      patDragging = false;
+      if (!movedDuringGesture && downDot) {
+        // If user tapped the last dot again, pop it so single-tap undo still works
+        if (patternSeq[patternSeq.length - 1] === downDot) {
+          patternSeq.pop();
+        }
+      }
+      downDot = null;
+      redrawPatternUi(null);
+    };
+
+    patWrap.addEventListener('pointerup', endPatDrag);
+    patWrap.addEventListener('pointercancel', endPatDrag);
+  }
+
   const clearPatBtn = dialog.querySelector('#clearPatternBtn');
   if (clearPatBtn) {
     clearPatBtn.onclick = () => {
       patternSeq = [];
-      redrawPatternUi();
+      redrawPatternUi(null);
     };
   }
 
@@ -3441,9 +3850,16 @@ function repairDeviceModal(devId = null, preClientId = null, startWindow = 'inta
     };
   });
 
+  const wInpTab4 = dialog.querySelector('[name="warranty"]');
+  const wInpTab2 = dialog.querySelector('[name="warrantyDiagInput"]');
+  if (wInpTab2 && wInpTab4) {
+    wInpTab2.addEventListener('input', () => { wInpTab4.value = wInpTab2.value; });
+    wInpTab4.addEventListener('input', () => { wInpTab2.value = wInpTab4.value; });
+  }
   dialog.querySelectorAll('[data-warranty-preset]').forEach(b => {
     b.onclick = () => {
-      dialog.querySelector('[name="warranty"]').value = b.dataset.warrantyPreset;
+      if (wInpTab4) wInpTab4.value = b.dataset.warrantyPreset;
+      if (wInpTab2) wInpTab2.value = b.dataset.warrantyPreset;
     };
   });
 
@@ -3687,8 +4103,7 @@ function buildRepairActDocumentHtml(dev, docType = 'intake') {
       `<div class="pdf-sig-col">` +
         `<b>Заказчик (Клиент): ${esc(client?.name || '')}</b>` +
         `<div class="pdf-sig-line pdf-sig-client-box">` +
-          `<span class="pdf-sig-cross">✕</span>` +
-          (sigDataUrl ? `<img class="pdf-sig-img" src="${sigDataUrl}" alt="Подпись заказчика">` : `<span class="pdf-sig-placeholder">Место для подписи</span>`) +
+          (sigDataUrl ? `<img class="pdf-sig-img" src="${sigDataUrl}" alt="Подпись заказчика">` : `<span class="pdf-sig-placeholder">Подпись заказчика</span>`) +
         `</div>` +
         `<small>${isHandover ? 'Устройство проверил, с условиями гарантии согласен, претензий не имею' : 'С условиями приёма и оферты ознакомлен и согласен'}</small>` +
       `</div>` +
@@ -3850,9 +4265,9 @@ function render() {
     : '';
 
   app.innerHTML = `<div class="shell">` +
-    `<aside class="sidebar"><div class="brand"><span class="brandmark">₽</span>Финансист</div><nav class="nav">${nav}</nav><div class="sidebar-note"><span class="statusdot"></span>Локальная база + IndexedDB<br><span class="version">Финансист 3.4 · Android 2026</span></div></aside>` +
+    `<aside class="sidebar"><div class="brand"><span class="brandmark">₽</span>Финансист</div><nav class="nav">${nav}</nav><div class="sidebar-note"><span class="statusdot"></span>Локальная база + IndexedDB<br><span class="version">Финансист 3.5 · Android 2026</span></div></aside>` +
     `<main class="main">` +
-      `<div class="mobile-brand"><span class="actions"><span class="brandmark">₽</span>Финансист</span><span class="pill ${activeShifts.length ? 'essential' : ''}">${activeShifts.length ? '🟢 В смене' : '3.4'}</span></div>` +
+      `<div class="mobile-brand"><span class="actions"><span class="brandmark">₽</span>Финансист</span><span class="pill ${activeShifts.length ? 'essential' : ''}">${activeShifts.length ? '🟢 В смене' : '3.5'}</span></div>` +
       `<div class="topline"><div><h1>${viewTitles[view] || 'Обзор'}</h1></div>${topRightHtml}</div>` +
       `${storageError ? `<div class="note negative">${esc(storageError)}</div>` : ''}` +
       `${content}` +
@@ -3868,6 +4283,7 @@ function render() {
 
 function bindEvents() {
   app.querySelectorAll('[data-view]').forEach(b => b.onclick = () => {
+    if (b.dataset.view === 'courier') workSubView = 'hub';
     view = b.dataset.view;
     render();
 setTimeout(() => { checkStartupPaymentAlerts(); syncNativeNotifications(false); }, 600);
@@ -4090,7 +4506,9 @@ setTimeout(() => { checkStartupPaymentAlerts(); syncNativeNotifications(false); 
 
 function action(name, id) {
   switch (name) {
-    case 'navigate': view = id; render(); window.scrollTo(0, 0); return;
+    case 'navigate': view = id; if (id === 'courier') workSubView = 'hub'; render(); window.scrollTo(0, 0); return;
+    case 'openWorkSubView': view = 'courier'; workSubView = id || 'hub'; render(); window.scrollTo(0, 0); return;
+    case 'openDrumOrderModal': return deliveryOrderDrumModal(id);
     case 'thumbSheet': return thumbSheetModal();
     case 'lendQuick': return transactionModal(null, { type: 'lend', debtId: '__new__' });
     case 'addTx': return transactionModal();
@@ -4528,15 +4946,7 @@ function renderRepairDeviceCard(dev) {
   `</div>`;
 }
 
-function courierView() {
-  const activeShifts = state.courierShifts.filter(x => x.startedAt && !x.endedAt);
-  const isDeliveryOpen = activeShifts.length > 0 || deliveryForceOpen;
-  let activeCleanSum = 0;
-  if (activeShifts.length) {
-    const x = activeShifts[0], t = shiftTotals(state, x), exp = shiftExpensesTotal(x);
-    activeCleanSum = t.net - exp - (t.fuelCost || 0);
-  }
-
+function repairSectionHtml() {
   const rep = state.repair || { clients: [], devices: [], priceList: [] };
   const q = repairSearch.trim().toLowerCase();
   const qDigits = q.replace(/[^0-9]/g, '');
@@ -4596,33 +5006,20 @@ function courierView() {
   }).join('');
 
   return (
-    `<details class="work-accordion ${activeShifts.length ? 'work-accordion-active' : ''}" id="deliveryWorkAccordion" ${isDeliveryOpen ? 'open' : ''}>` +
-      `<summary class="work-accordion-summary">` +
-        `<div class="work-acc-title">` +
-          `<span class="service-badge x5">🛵</span>` +
-          `<div>` +
-            `<h2>Курьерка и доставка</h2>` +
-            `<small class="muted">${activeShifts.length ? `🟢 Смена активна · чистыми ${rub(activeCleanSum)}` : 'Свёрнуто · нажми, чтобы начать смену или сверить расчётку'}</small>` +
-          `</div>` +
-        `</div>` +
-        `<span class="pill ${activeShifts.length ? 'essential' : ''}">${activeShifts.length ? 'На линии' : 'Раскрыть ▾'}</span>` +
-      `</summary>` +
-      `<div class="work-accordion-body">${deliverySectionHtml()}</div>` +
-    `</details>` +
-
+    `<div class="courier-topbar"><div class="actions">` +
+      `${btn('openWorkSubView', '← Назад в Работу', 'hub', 'soft')}` +
+      `${btn('newRepairDevice', '+ Принять устройство', '', 'primary')}` +
+      `${btn('newRepairClient', '+ Клиент', '', 'soft')}` +
+      `${btn('repairSettingsModal', '📋 Прайс и оферта', '', 'ghost')}` +
+    `</div></div>` +
     `<section class="flat-section repair-hub-section">` +
       `<div class="section-title">` +
         `<div class="work-acc-title">` +
           `<span class="service-badge repair-badge">🛠</span>` +
           `<div>` +
             `<h2>Ремонт техники и клиенты</h2>` +
-            `<p class="muted">Приёмка по номеру телефона, прайс-лист, прозвоны, архив диагнозов и PDF-акты с гарантией</p>` +
+            `<p class="muted">Опросник приёма, прайс-лист, прозвоны, ручная подпись и PDF-акты с гарантией</p>` +
           `</div>` +
-        `</div>` +
-        `<div class="actions">` +
-          `${btn('newRepairDevice', '+ Принять устройство', '', 'primary')}` +
-          `${btn('newRepairClient', '+ Клиент', '', 'soft')}` +
-          `${btn('repairSettingsModal', '📋 Прайс и оферта', '', 'ghost')}` +
         `</div>` +
       `</div>` +
 
@@ -4630,11 +5027,11 @@ function courierView() {
         `<input type="search" id="liveRepairSearch" value="${esc(repairSearch)}" placeholder="🔍 Поиск по номеру телефона, ФИО клиента, модели или диагнозу…">` +
       `</div>` +
 
-      `<div class="segmented">` +
+      `<div class="segmented segmented-2x2">` +
         `${btn('setRepairTab', `В работе (${activeDevices.length})`, 'active', repairTab === 'active' ? 'primary' : 'ghost')}` +
-        `${btn('setRepairTab', `Прозвон и переносы (${callDevices.length})`, 'calls', repairTab === 'calls' ? 'primary' : 'ghost')}` +
+        `${btn('setRepairTab', `Прозвон / сроки (${callDevices.length})`, 'calls', repairTab === 'calls' ? 'primary' : 'ghost')}` +
         `${btn('setRepairTab', `Клиенты (${filteredClients.length})`, 'clients', repairTab === 'clients' ? 'primary' : 'ghost')}` +
-        `${btn('setRepairTab', `Архив выданных (${archivedDevices.length})`, 'archive', repairTab === 'archive' ? 'primary' : 'ghost')}` +
+        `${btn('setRepairTab', `Архив (${archivedDevices.length})`, 'archive', repairTab === 'archive' ? 'primary' : 'ghost')}` +
       `</div>` +
 
       `<div class="repair-list-stack">` +
@@ -4647,5 +5044,94 @@ function courierView() {
           : singleLatestList(archivedDevices.map(renderRepairDeviceCard), '<p class="muted empty-line">В архиве выданных устройств пока пусто.</p>', 'Показать ранее выданные устройства')) +
       `</div>` +
     `</section>`
+  );
+}
+
+function courierView() {
+  if (workSubView === 'delivery') return deliverySectionHtml();
+  if (workSubView === 'repair') return repairSectionHtml();
+
+  const activeShifts = state.courierShifts.filter(x => x.startedAt && !x.endedAt);
+  const closedShifts = state.courierShifts.filter(x => !x.startedAt || x.endedAt);
+  const pendingPayout = state.courierStatements.reduce((n, r) => n + statementRemaining(state, r.id), 0);
+  const rep = state.repair || { clients: [], devices: [], priceList: [] };
+  const activeRepairsCount = (rep.devices || []).filter(d => d.status !== 'archived').length;
+  const callRepairsCount = (rep.devices || []).filter(d => d.status !== 'archived' && (d.callReminderDate || d.postponeReason)).length;
+
+  const activeShiftQuickHtml = activeShifts.map(x => {
+    const t = shiftTotals(state, x);
+    const exp = shiftExpensesTotal(x);
+    const cleanNet = t.net - exp - (t.fuelCost || 0);
+    const grossTotal = t.earned + t.tips;
+    const totalCosts = (t.fuelCost || 0) + exp + (t.tax || 0);
+    const lunch = shiftLunchState(x);
+
+    return `<section class="flat-section work-active-shift-card">` +
+      `<div class="section-title">` +
+        `<div class="actions">` +
+          `<span class="statusdot"></span>` +
+          `<h2>Активная смена курьера</h2>` +
+          `<span class="pill essential" data-live-shift-elapsed="${esc(x.id)}">⏱ ${formatShiftElapsed(x)}</span>` +
+          `<span class="pill" data-live-lunch-timer="${esc(x.id)}">🍱 ${formatLunchClock(lunch.remainingMs)}</span>` +
+        `</div>` +
+        `<div class="actions">${btn('openWorkSubView', 'Пульт смены →', 'delivery', 'small ghost')}</div>` +
+      `</div>` +
+
+      `<div class="work-shift-net-hero">` +
+        `<span class="work-net-label">Заработок чистыми за смену</span>` +
+        `<strong class="work-net-amount ${cleanNet < 0 ? 'negative' : 'positive'}">${rub(cleanNet)}</strong>` +
+        `<div class="work-gross-meta">` +
+          `Грязный доход: <b>${rub(grossTotal)}</b> (заказы ${rub(t.earned)}${t.tips ? ` + чай ${rub(t.tips)}` : ''}) · ` +
+          `Затраты на смене: <b>−${rub(totalCosts)}</b> (бензин −${rub(t.fuelCost || 0)}, продукты/расход −${rub(exp)}, налог −${rub(t.tax)})` +
+        `</div>` +
+      `</div>` +
+
+      `<div class="work-shift-quick-actions">` +
+        `<button type="button" class="primary big-add-order-btn" data-action="openDrumOrderModal" data-id="${esc(x.id)}">➕ + Заказ</button>` +
+        `<div class="work-shift-mini-btns">` +
+          `<button type="button" class="small soft" data-action="shiftExpense" data-id="${esc(x.id)}">🍔 Продукты / Расход</button>` +
+          `<button type="button" class="small soft" data-action="shiftOdoModal" data-id="${esc(x.id)}">⛽ Бензин (${t.fuelKm || 0} км)</button>` +
+          `<button type="button" class="small soft" data-action="tip" data-id="${esc(x.id)}">🍵 + Чай</button>` +
+        `</div>` +
+      `</div>` +
+    `</section>`;
+  }).join('');
+
+  return (
+    activeShiftQuickHtml +
+    `<div class="work-hub-grid">` +
+      `<div class="flat-section work-hub-card" data-action="openWorkSubView" data-id="delivery" role="button" tabindex="0">` +
+        `<div class="work-hub-card-head">` +
+          `<span class="service-badge x5">🛵</span>` +
+          `<span class="pill ${activeShifts.length ? 'essential' : ''}">${activeShifts.length ? '🟢 Смена активна' : 'Смена закрыта'}</span>` +
+        `</div>` +
+        `<h2>Курьерка и доставка</h2>` +
+        `<p class="muted">Смены, барабанный ввод заказов, таймер обеда, расчёт бензина по пробегу и сверка расчёток.</p>` +
+        `<div class="work-hub-stats">` +
+          `<span>Закрытых смен: <b>${closedShifts.length}</b></span>` +
+          `<span>К выплате: <b>${rub(pendingPayout)}</b></span>` +
+        `</div>` +
+        `<div class="actions section">` +
+          `<button type="button" class="primary small" data-action="openWorkSubView" data-id="delivery">${activeShifts.length ? 'Открыть пульт смены →' : 'Открыть курьерку →'}</button>` +
+        `</div>` +
+      `</div>` +
+
+      `<div class="flat-section work-hub-card" data-action="openWorkSubView" data-id="repair" role="button" tabindex="0">` +
+        `<div class="work-hub-card-head">` +
+          `<span class="service-badge repair-badge">🛠</span>` +
+          `<span class="pill ${activeRepairsCount ? 'essential' : ''}">В работе: ${activeRepairsCount}</span>` +
+        `</div>` +
+        `<h2>Ремонт техники</h2>` +
+        `<p class="muted">База клиентов, быстрый опросник приёма на 5 шагов, диагнозы, прайс-лист, прозвоны и PDF-акты с подписью.</p>` +
+        `<div class="work-hub-stats">` +
+          `<span>Клиентов: <b>${rep.clients.length}</b></span>` +
+          `<span>На прозвоне: <b>${callRepairsCount}</b></span>` +
+        `</div>` +
+        `<div class="actions section">` +
+          `<button type="button" class="primary small" data-action="openWorkSubView" data-id="repair">Открыть ремонт техники →</button>` +
+          `<button type="button" class="soft small" data-action="newRepairDevice">+ Принять устройство</button>` +
+        `</div>` +
+      `</div>` +
+    `</div>`
   );
 }

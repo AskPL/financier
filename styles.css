@@ -429,19 +429,68 @@ button:active {
   display: inline-flex;
   flex-wrap: wrap;
   gap: 6px;
-  padding: 5px;
-  border-radius: var(--r-pill);
+  padding: 6px;
+  border-radius: 14px;
   background: var(--surface-tonal);
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-strong);
   margin: 6px 0;
+  max-width: 100%;
 }
 
 .segmented button,
 .theme-picker button {
-  min-height: 36px;
-  padding: 6px 14px;
-  border-radius: var(--r-pill);
+  min-height: 38px;
+  padding: 7px 12px;
+  border-radius: 10px;
   font-size: 13px;
+}
+
+.segmented.segmented-2x2 {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  width: 100%;
+  gap: 6px;
+  padding: 6px;
+  border-radius: 14px;
+}
+
+.segmented.segmented-2x2 button {
+  width: 100%;
+  min-height: 42px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  white-space: normal;
+  text-align: center;
+  line-height: 1.2;
+}
+
+.segmented.segmented-4col {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  width: 100%;
+  gap: 6px;
+  padding: 6px;
+  border-radius: 14px;
+}
+
+.segmented.segmented-4col button {
+  width: 100%;
+  min-height: 52px;
+  padding: 6px 4px;
+  border-radius: 10px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  font-size: 16px;
+  font-weight: 800;
+}
+
+.segmented.segmented-4col button b {
+  font-size: 11px;
+  font-weight: 600;
+  opacity: 0.85;
 }
 
 .quick-buttons {
@@ -2799,4 +2848,364 @@ dialog#dialog::backdrop {
   font-size: 11.5px;
   color: #94A3B8;
   font-weight: 600;
+}
+
+
+/* ==========================================================================
+   Financier 3.5 — Work Hub, Inertia Drum Modal, 210x210 Pattern Lock & Landscape Signature
+   ========================================================================== */
+
+.debt-two-actions {
+  margin-top: 2px;
+  margin-bottom: 4px;
+}
+
+.debt-flow-hint {
+  display: block;
+  margin-bottom: 10px;
+  font-size: 12px;
+}
+
+/* Чистый блок графического ключа 3x3 без матрёшки из рамок */
+.pattern-lock-clean {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 0 4px;
+}
+
+.pattern-grid-wrap {
+  position: relative;
+  width: 210px !important;
+  height: 210px !important;
+  border-radius: 18px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  user-select: none;
+  touch-action: none;
+  margin: 0 auto;
+}
+
+.pattern-svg-overlay {
+  position: absolute;
+  inset: 0;
+  width: 210px !important;
+  height: 210px !important;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.pattern-dots-grid {
+  position: relative;
+  z-index: 2;
+  width: 210px !important;
+  height: 210px !important;
+  display: grid;
+  grid-template-columns: repeat(3, 70px) !important;
+  grid-template-rows: repeat(3, 70px) !important;
+  place-items: center;
+}
+
+button.pattern-dot {
+  width: 44px !important;
+  height: 44px !important;
+  min-height: 0 !important;
+  padding: 0 !important;
+  border-radius: 50% !important;
+  aspect-ratio: 1 / 1;
+  background: var(--surface-tonal);
+  border: 2px solid var(--border-strong);
+  display: inline-grid;
+  place-items: center;
+  font-weight: 800;
+  font-size: 14px;
+  color: var(--muted);
+  pointer-events: none;
+}
+
+button.pattern-dot.active {
+  background: var(--accent);
+  border-color: #34D399;
+  color: #FFFFFF;
+  transform: scale(1.12);
+  box-shadow: 0 0 0 5px var(--accent-soft);
+}
+
+/* Горизонтальный (альбомный) режим полноэкранной подписи */
+.fullscreen-sig-overlay.landscape-sig-mode {
+  position: fixed;
+  inset: 0;
+  z-index: 250;
+  background: #0B0F17;
+  overflow: hidden;
+}
+
+.sig-pad-shell.sig-rotated-90 {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  width: 100dvh;
+  height: 100dvw;
+  transform: translate(-50%, -50%) rotate(90deg);
+  padding: 12px 18px;
+  gap: 10px;
+}
+
+.sig-pad-topbar {
+  padding: 10px 14px;
+  border-radius: 14px;
+}
+
+.sig-pad-title-wrap h3 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.sig-canvas-stage {
+  flex: 1;
+  min-height: 170px;
+  border-radius: 16px;
+  background: #FFFFFF;
+  border: 2px solid #CBD5E1;
+  position: relative;
+  overflow: hidden;
+  touch-action: none;
+}
+
+.sig-guide-line {
+  position: absolute;
+  left: 24px;
+  right: 24px;
+  bottom: 34px;
+  border-bottom: 2px dashed #94A3B8;
+  padding-bottom: 6px;
+  pointer-events: none;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+}
+
+/* Вкладка Работа: Раздельный хаб (Курьерка / Ремонт) + Быстрое меню активной смены */
+.work-active-shift-card {
+  border-color: rgba(16, 185, 129, 0.42);
+  background:
+    radial-gradient(120% 120% at 100% 0%, rgba(16, 185, 129, 0.14) 0%, transparent 60%),
+    var(--surface);
+  margin-bottom: 14px;
+}
+
+.work-shift-net-hero {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 14px 16px;
+  border-radius: 16px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  margin: 10px 0 12px;
+}
+
+.work-net-label {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.work-net-amount {
+  font-size: 32px;
+  font-weight: 900;
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+}
+
+.work-gross-meta {
+  font-size: 12.5px;
+  color: var(--muted);
+  line-height: 1.4;
+  margin-top: 2px;
+}
+
+.work-shift-quick-actions,
+.shift-add-order-cta {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 10px 0;
+}
+
+.big-add-order-btn {
+  width: 100%;
+  min-height: 50px;
+  font-size: 16px;
+  font-weight: 800;
+  border-radius: 14px;
+}
+
+.work-shift-mini-btns,
+.shift-quick-exp-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.work-shift-mini-btns button {
+  flex: 1 1 auto;
+}
+
+.work-hub-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 14px;
+}
+
+.work-hub-card {
+  cursor: pointer;
+  transition: transform 0.14s ease, border-color 0.16s ease;
+  justify-content: space-between;
+}
+
+.work-hub-card:hover {
+  border-color: var(--accent);
+}
+
+.work-hub-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.work-hub-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  font-size: 13px;
+  margin-top: 8px;
+}
+
+/* Крупное модальное окно барабанного ввода с инерцией */
+.drum-modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.drum-orders-selector {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.custom-orders-modal-row {
+  margin-top: 4px;
+}
+
+.modal-alarm-display .alarm-main-input {
+  font-size: 28px;
+  font-weight: 900;
+  height: 54px;
+}
+
+.modal-drums-large {
+  align-items: center;
+}
+
+.inertia-drum-viewport {
+  position: relative;
+  width: 100%;
+  height: 210px;
+  border-radius: 16px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  overflow: hidden;
+  user-select: none;
+  touch-action: none;
+  cursor: grab;
+}
+
+.inertia-drum-viewport::before,
+.inertia-drum-viewport::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 58px;
+  pointer-events: none;
+  z-index: 3;
+}
+
+.inertia-drum-viewport::before {
+  top: 0;
+  background: linear-gradient(to bottom, var(--surface) 10%, rgba(15, 23, 42, 0));
+}
+
+.inertia-drum-viewport::after {
+  bottom: 0;
+  background: linear-gradient(to top, var(--surface) 10%, rgba(15, 23, 42, 0));
+}
+
+.inertia-drum-lens {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  top: 50%;
+  height: 44px;
+  transform: translateY(-50%);
+  border-radius: 10px;
+  background: var(--accent-soft);
+  border-top: 1px solid rgba(99, 102, 241, 0.45);
+  border-bottom: 1px solid rgba(99, 102, 241, 0.45);
+  pointer-events: none;
+  z-index: 1;
+}
+
+.inertia-drum-track {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 210px;
+  will-change: transform;
+}
+
+.drum-slot {
+  height: 42px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  font-variant-numeric: tabular-nums;
+  transition: color 0.1s ease, opacity 0.1s ease;
+}
+
+.drum-slot-center {
+  font-size: 30px;
+  font-weight: 900;
+  color: var(--text);
+}
+
+.drum-slot-near {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--muted);
+  opacity: 0.68;
+  transform: scale(0.92);
+}
+
+.drum-slot-far {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--muted);
+  opacity: 0.32;
+  transform: scale(0.82);
 }

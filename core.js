@@ -505,12 +505,24 @@ export function shiftLunchState(x, now = Date.now()) {
   return { active: false, remainingMs: Math.max(0, baseRem), elapsedCurrentMs: 0 };
 }
 
+export const ORDER_COUNT_PRESETS_CENTS = {
+  1: 20000,
+  2: 31000,
+  3: 40000,
+  4: 50000
+};
+
+export function presetOrderAmountCents(orderCount = 1) {
+  const n = Math.max(1, Number(orderCount) || 1);
+  if (ORDER_COUNT_PRESETS_CENTS[n]) return ORDER_COUNT_PRESETS_CENTS[n];
+  return 50000 + Math.max(0, n - 4) * 10000;
+}
+
 export function averageOrderAmountCents(s, orderCount = 1) {
   const n = Math.max(1, Number(orderCount) || 1);
-  const baseDefaults = { 1: 21500, 2: 40000, 3: 44000 };
-  const fallback = baseDefaults[n] || (n * 15000);
+  const fallback = presetOrderAmountCents(n);
   const matching = [];
-  for (const sh of (s.courierShifts || [])) {
+  for (const sh of (s?.courierShifts || [])) {
     for (const e of (sh.entries || [])) {
       if (Number(e.orders) === n && Number.isFinite(e.amount) && e.amount > 0) {
         matching.push(e.amount);
