@@ -1,0 +1,109 @@
+name: Сборка Release APK и публикация релиза (Финансист 3.6)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+
+permissions:
+  contents: write
+
+jobs:
+  build-release-apk:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Скачивание кода репозитория
+        uses: actions/checkout@v4
+
+      - name: Настройка Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Настройка Java 17 для Android SDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: 17
+
+      - name: Сборка веб-ресурсов, инициализация Capacitor и замена всех иконок
+        run: |
+          npm install
+          node prepare-www.mjs
+          npx cap add android
+          npx cap sync android
+          for dir in android/app/src/main/res/mipmap-*; do
+            if [ -d "$dir" ]; then
+              cp icon-512.png "$dir/ic_launcher.png" || true
+              cp icon-512.png "$dir/ic_launcher_round.png" || true
+              cp icon-512.png "$dir/ic_launcher_foreground.png" || true
+            fi
+          done
+          for dir in android/app/src/main/res/drawable*; do
+            if [ -d "$dir" ]; then
+              cp icon-192.png "$dir/ic_stat_icon_config_sample.png" || true
+            fi
+          done
+          if ! grep -q "android.permission.VIBRATE" android/app/src/main/AndroidManifest.xml; then
+            sed -i 's/<application/<uses-permission android:name="android.permission.VIBRATE" \/>\n    <application/' android/app/src/main/AndroidManifest.xml
+          fi
+
+      - name: Настройка постоянной подписи Release APK и версионирования
+        run: |
+          keytool -genkeypair -v \
+            -keystore android/app/financier-release.keystore \
+            -alias financier_key \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -storepass FinancierRelease2026 \
+            -keypass FinancierRelease2026 \
+            -dname "CN=AskPL, OU=Financier, O=AskPL, L=RU, ST=RU, C=RU"
+
+          VER_CODE=$((360 + ${{ github.run_number }}))
+          VER_NAME="3.6.${{ github.run_number }}"
+          sed -i "s/versionCode 1/versionCode ${VER_CODE}/g" android/app/build.gradle
+          sed -i "s/versionName \"1.0\"/versionName \"${VER_NAME}\"/g" android/app/build.gradle
+
+          cat << 'EOF' >> android/app/build.gradle
+
+          android {
+              signingConfigs {
+                  release {
+                      storeFile file("financier-release.keystore")
+                      storePassword "FinancierRelease2026"
+                      keyAlias "financier_key"
+                      keyPassword "FinancierRelease2026"
+                  }
+              }
+              buildTypes {
+                  release {
+                      signingConfig signingConfigs.release
+                      minifyEnabled false
+                      shrinkResources false
+                  }
+              }
+          }
+          EOF
+
+      - name: Компиляция подписанного Release APK
+        working-directory: ./android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease
+          cp app/build/outputs/apk/release/app-release.apk ../Financier-release.apk
+
+      - name: Выгрузка Financier-release.apk в Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Financier-3.6-Release-APK
+          path: Financier-release.apk
+
+      - name: Автоматическая публикация в GitHub Releases (для обновления в 1 клик)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v3.6.${{ github.run_number }}
+          name: "Финансист v3.6.${{ github.run_number }} Release"
+          body: "Автоматическая релизная сборка Финансист 3.6 (Android 2026). Устанавливается поверх предыдущей Release-версии без удаления данных."
+          draft: false
+          prerelease: false
+          make_latest: true
+          files: Financier-release.apk
